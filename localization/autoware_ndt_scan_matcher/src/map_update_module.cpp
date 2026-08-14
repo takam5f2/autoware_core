@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace autoware::ndt_scan_matcher
 {
@@ -146,14 +147,43 @@ MapUpdateModule::LoadResult MapUpdateModule::load_differential_map(
   diagnostics.add_key_value(
     {"maps_size_before", static_cast<int64_t>(ndt.getCurrentMapIDs().size())});
 
+  const auto response = fetch_differential_map(position, ndt.getCurrentMapIDs(), diagnostics);
+  if (!response) {
+    return LoadResult::Failed;
+  }
+
+  if (response->new_pointcloud_with_ids.empty() && response->ids_to_remove.empty()) {
+    return LoadResult::NoChange;
+  }
+
+  const auto exe_start_time = std::chrono::system_clock::now();
+
+  apply_differential_map(*response, ndt, loaded_pcd_map);
+
+  const auto exe_end_time = std::chrono::system_clock::now();
+  const auto duration_micro_sec =
+    std::chrono::duration_cast<std::chrono::microseconds>(exe_end_time - exe_start_time).count();
+  const auto exe_time = static_cast<double>(duration_micro_sec) / 1000.0;
+  diagnostics.add_key_value({"map_update_execution_time", exe_time});
+  diagnostics.add_key_value(
+    {"maps_size_after", static_cast<int64_t>(ndt.getCurrentMapIDs().size())});
+
+  return LoadResult::Updated;
+}
+
+MapUpdateModule::GetDifferentialPointCloudMap::Response::SharedPtr
+MapUpdateModule::fetch_differential_map(
+  const geometry_msgs::msg::Point & position, const std::vector<std::string> & cached_ids,
+  DiagnosticsReport & diagnostics)
+{
   auto request = std::make_shared<GetDifferentialPointCloudMap::Request>();
 
   request->area.center_x = static_cast<float>(position.x);
   request->area.center_y = static_cast<float>(position.y);
   request->area.radius = static_cast<float>(param_.map_radius);
-  request->cached_ids = ndt.getCurrentMapIDs();
+  request->cached_ids = cached_ids;
 
-  // Fetch the differential point cloud map. The ROS node performs the actual service call.
+  // The ROS node performs the actual service call.
   const auto response = pcd_loader_(request);
 
   // check is_succeed_call_pcd_loader
@@ -162,24 +192,23 @@ MapUpdateModule::LoadResult MapUpdateModule::load_differential_map(
   if (!is_succeed_call_pcd_loader) {
     diagnostics.update_level_and_message(
       DiagnosticLevel::WARN, "pcd_loader service is not working.");
-    return LoadResult::Failed;
+    return nullptr;
   }
 
-  auto & maps_to_add = response->new_pointcloud_with_ids;
-  auto & map_ids_to_remove = response->ids_to_remove;
-
-  diagnostics.add_key_value({"maps_to_add_size", static_cast<int64_t>(maps_to_add.size())});
   diagnostics.add_key_value(
-    {"maps_to_remove_size", static_cast<int64_t>(map_ids_to_remove.size())});
+    {"maps_to_add_size", static_cast<int64_t>(response->new_pointcloud_with_ids.size())});
+  diagnostics.add_key_value(
+    {"maps_to_remove_size", static_cast<int64_t>(response->ids_to_remove.size())});
 
-  if (maps_to_add.empty() && map_ids_to_remove.empty()) {
-    return LoadResult::NoChange;
-  }
+  return response;
+}
 
-  const auto exe_start_time = std::chrono::system_clock::now();
-
+void MapUpdateModule::apply_differential_map(
+  const GetDifferentialPointCloudMap::Response & response, NdtType & ndt,
+  LoadedPcdMap & loaded_pcd_map)
+{
   // Add pcd
-  for (auto & map : maps_to_add) {
+  for (const auto & map : response.new_pointcloud_with_ids) {
     auto cloud = pcl::make_shared<pcl::PointCloud<PointTarget>>();
 
     pcl::fromROSMsg(map.pointcloud, *cloud);
@@ -193,7 +222,7 @@ MapUpdateModule::LoadResult MapUpdateModule::load_differential_map(
   }
 
   // Remove pcd
-  for (const std::string & map_id_to_remove : map_ids_to_remove) {
+  for (const std::string & map_id_to_remove : response.ids_to_remove) {
     ndt.removeTarget(map_id_to_remove);
 
     if (param_.publish_loaded_map) {
@@ -201,21 +230,14 @@ MapUpdateModule::LoadResult MapUpdateModule::load_differential_map(
     }
   }
 
+  // Has to stay in the same function as the add and remove above: until the kdtree is rebuilt the
+  // NDT is inconsistent, because grid_list_ still holds the slots of the removed cells and both
+  // the voxel centroids and the leaf pointers are stale.
   ndt.createVoxelKdtree();
 
   if (param_.publish_loaded_map) {
-    loaded_pcd_map.stamp = response->header.stamp;
+    loaded_pcd_map.stamp = response.header.stamp;
   }
-
-  const auto exe_end_time = std::chrono::system_clock::now();
-  const auto duration_micro_sec =
-    std::chrono::duration_cast<std::chrono::microseconds>(exe_end_time - exe_start_time).count();
-  const auto exe_time = static_cast<double>(duration_micro_sec) / 1000.0;
-  diagnostics.add_key_value({"map_update_execution_time", exe_time});
-  diagnostics.add_key_value(
-    {"maps_size_after", static_cast<int64_t>(ndt.getCurrentMapIDs().size())});
-
-  return LoadResult::Updated;
 }
 
 sensor_msgs::msg::PointCloud2 MapUpdateModule::merge_loaded_pcd_map(

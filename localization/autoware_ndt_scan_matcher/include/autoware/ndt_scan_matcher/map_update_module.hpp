@@ -171,6 +171,18 @@ private:
     const geometry_msgs::msg::Point & position, NdtType & ndt, LoadedPcdMap & loaded_pcd_map,
     DiagnosticsReport & diagnostics);
 
+  // The only place that reaches outside this module. Returns the loader's response, or nullptr if
+  // it could not be obtained.
+  [[nodiscard]] GetDifferentialPointCloudMap::Response::SharedPtr fetch_differential_map(
+    const geometry_msgs::msg::Point & position, const std::vector<std::string> & cached_ids,
+    DiagnosticsReport & diagnostics);
+
+  // Applies an already fetched response to `ndt` and to the debug map. Performs no I/O, so every
+  // call out of this module stays in fetch_differential_map() above.
+  void apply_differential_map(
+    const GetDifferentialPointCloudMap::Response & response, NdtType & ndt,
+    LoadedPcdMap & loaded_pcd_map);
+
   // Merges the per-cell clouds into the single cloud the ROS node publishes. Best effort: a cell
   // whose field layout does not match the others is skipped and reported through `diagnostics`.
   [[nodiscard]] static sensor_msgs::msg::PointCloud2 merge_loaded_pcd_map(
