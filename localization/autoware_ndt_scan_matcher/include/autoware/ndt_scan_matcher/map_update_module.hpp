@@ -19,6 +19,8 @@
 #include "hyper_parameters.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
 
+#include <builtin_interfaces/msg/time.hpp>
+
 #include <autoware_map_msgs/srv/get_differential_point_cloud_map.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -27,6 +29,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -102,6 +105,16 @@ public:
   };
 
 private:
+  // The point clouds of the map cells the NDT currently holds, keyed by cell id, together with the
+  // stamp of the response they came from. Only populated when param_.publish_loaded_map is enabled.
+  // Keeping the cells separately (rather than one pre-merged cloud) is what allows a removed cell
+  // to be dropped again, so that the debug publish keeps matching the map the NDT actually holds.
+  struct LoadedPcdMap
+  {
+    std::map<std::string, sensor_msgs::msg::PointCloud2> cells;
+    builtin_interfaces::msg::Time stamp;
+  };
+
   struct BuilderState
   {
     bool need_rebuild{true};
@@ -136,6 +149,11 @@ private:
   bool update_ndt(
     const geometry_msgs::msg::Point & position, NdtType & ndt, DiagnosticsReport & diagnostics);
 
+  // Merges the per-cell clouds into the single cloud the ROS node publishes. Best effort: a cell
+  // whose field layout does not match the others is skipped and reported through `diagnostics`.
+  [[nodiscard]] static sensor_msgs::msg::PointCloud2 merge_loaded_pcd_map(
+    const LoadedPcdMap & loaded_pcd_map, DiagnosticsReport & diagnostics);
+
   PcdLoaderFunction pcd_loader_;
 
   // To prevent deadlocks, acquire locks in the following order:
@@ -147,9 +165,9 @@ private:
 
   HyperParameters::DynamicMapLoading param_;
 
-  // Merged loaded point cloud map for the debug publish, only populated when
-  // param_.publish_loaded_map is enabled. Accessed only while builder_state_'s lock is held.
-  sensor_msgs::msg::PointCloud2 loaded_pcd_map_;
+  // Cells loaded for the debug publish, only populated when param_.publish_loaded_map is enabled.
+  // Accessed only while builder_state_'s lock is held.
+  LoadedPcdMap loaded_pcd_map_;
 };
 
 }  // namespace autoware::ndt_scan_matcher

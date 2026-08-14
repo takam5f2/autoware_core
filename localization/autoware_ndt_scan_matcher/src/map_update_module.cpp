@@ -87,7 +87,7 @@ MapUpdateModule::UpdateResult MapUpdateModule::callback_timer(
     }
     const bool updated = update_map_internal(builder_state, position.value(), diagnostics);
     if (updated && param_.publish_loaded_map) {
-      result.loaded_pcd_map = loaded_pcd_map_;
+      result.loaded_pcd_map = merge_loaded_pcd_map(loaded_pcd_map_, diagnostics);
     }
     return updated;
   });
@@ -156,7 +156,7 @@ bool MapUpdateModule::update_map_internal(
 
       ndt_ptr.reset(new NdtType);
       // The map is rebuilt from scratch, so reset the accumulated debug map as well.
-      loaded_pcd_map_ = sensor_msgs::msg::PointCloud2{};
+      loaded_pcd_map_ = LoadedPcdMap();
 
       ndt_ptr->setParams(param);
 
@@ -228,7 +228,7 @@ MapUpdateModule::UpdateResult MapUpdateModule::update_map(
   result.map_updated = builder_state_.with([&](auto & builder_state) {
     const bool updated = update_map_internal(builder_state, position, result.diagnostics);
     if (updated && param_.publish_loaded_map) {
-      result.loaded_pcd_map = loaded_pcd_map_;
+      result.loaded_pcd_map = merge_loaded_pcd_map(loaded_pcd_map_, result.diagnostics);
     }
     return updated;
   });
@@ -281,23 +281,26 @@ bool MapUpdateModule::update_ndt(
     pcl::fromROSMsg(map.pointcloud, *cloud);
     ndt.addTarget(cloud, map.cell_id);
 
-    // Accumulate the loaded cloud for the debug publish, merging the PointCloud2 directly to
-    // avoid a PCL round-trip.
+    // Mirror the cell for the debug publish. It is kept under its cell id so that it can be
+    // dropped again below when the map loader asks for the cell to be removed.
     if (param_.publish_loaded_map) {
-      pcl::concatenatePointCloud(loaded_pcd_map_, map.pointcloud, loaded_pcd_map_);
+      loaded_pcd_map_.cells[map.cell_id] = map.pointcloud;
     }
   }
 
   // Remove pcd
   for (const std::string & map_id_to_remove : map_ids_to_remove) {
     ndt.removeTarget(map_id_to_remove);
+
+    if (param_.publish_loaded_map) {
+      loaded_pcd_map_.cells.erase(map_id_to_remove);
+    }
   }
 
   ndt.createVoxelKdtree();
 
   if (param_.publish_loaded_map) {
-    loaded_pcd_map_.header.stamp = response->header.stamp;
-    loaded_pcd_map_.header.frame_id = "map";
+    loaded_pcd_map_.stamp = response->header.stamp;
   }
 
   const auto exe_end_time = std::chrono::system_clock::now();
@@ -309,6 +312,32 @@ bool MapUpdateModule::update_ndt(
     {"maps_size_after", static_cast<int64_t>(ndt.getCurrentMapIDs().size())});
 
   return true;  // Updated
+}
+
+sensor_msgs::msg::PointCloud2 MapUpdateModule::merge_loaded_pcd_map(
+  const LoadedPcdMap & loaded_pcd_map, DiagnosticsReport & diagnostics)
+{
+  sensor_msgs::msg::PointCloud2 merged;
+  int64_t skipped_cells = 0;
+
+  for (const auto & cell : loaded_pcd_map.cells) {
+    // Merge the PointCloud2 messages directly to avoid a PCL round-trip. This only fails when the
+    // cells disagree on their field layout, which the map loader should never produce.
+    if (!pcl::concatenatePointCloud(merged, cell.second, merged)) {
+      ++skipped_cells;
+    }
+  }
+
+  diagnostics.add_key_value({"loaded_pcd_map_skipped_cells", skipped_cells});
+  if (skipped_cells > 0) {
+    diagnostics.update_level_and_message(
+      DiagnosticLevel::WARN, "Some map cells could not be merged for the loaded map publish.");
+  }
+
+  merged.header.stamp = loaded_pcd_map.stamp;
+  merged.header.frame_id = "map";
+
+  return merged;
 }
 
 }  // namespace autoware::ndt_scan_matcher
