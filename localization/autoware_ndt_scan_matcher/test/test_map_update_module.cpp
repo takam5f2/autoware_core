@@ -148,78 +148,102 @@ protected:
   {
     if (!module_) {
       module_ = std::make_unique<MapUpdateModule>(
-        ndt_ptr_, param_, [this](const GetDifferentialPointCloudMap::Request::SharedPtr & request) {
+        param_, NdtType().getParams(),
+        [this](const GetDifferentialPointCloudMap::Request::SharedPtr & request) {
           return loader_(request);
         });
     }
     return *module_;
   }
 
-  [[nodiscard]] std::vector<std::string> loaded_cell_ids()
+  // Stands in for the ROS node: runs an update and installs whatever comes back, exactly as
+  // NDTScanMatcher::install_map_update() does.
+  MapUpdateModule::MapUpdate update_and_install(const geometry_msgs::msg::Point & position)
   {
-    return ndt_ptr_.with([](const auto & ndt_ptr) { return ndt_ptr->getCurrentMapIDs(); });
+    auto update = module().update(position);
+    if (update.ndt) {
+      installed_ndt_ = update.ndt;
+    }
+    return update;
+  }
+
+  [[nodiscard]] std::vector<std::string> loaded_cell_ids() const
+  {
+    return installed_ndt_ ? installed_ndt_->getCurrentMapIDs() : std::vector<std::string>{};
   }
 
   HyperParameters::DynamicMapLoading param_{};
   FakePcdLoader loader_;
-  Guarded<NdtPtrType> ndt_ptr_{std::make_shared<NdtType>()};
+  NdtPtrType installed_ndt_;
   std::unique_ptr<MapUpdateModule> module_;
 };
 
 // The very first update has no reference position, so it must load the map.
 TEST_F(MapUpdateModuleTest, first_update_loads_the_map)
 {
-  const auto result = module().callback_timer(true, make_point(300.0, 300.0));
+  const auto result = update_and_install(make_point(300.0, 300.0));
 
-  EXPECT_TRUE(result.map_updated);
+  EXPECT_NE(result.ndt, nullptr);
   EXPECT_EQ(result.diagnostics.level, MapUpdateModule::DiagnosticLevel::OK);
   EXPECT_FALSE(loaded_cell_ids().empty());
 }
 
 TEST_F(MapUpdateModuleTest, update_is_skipped_until_the_vehicle_has_moved_far_enough)
 {
-  ASSERT_TRUE(module().callback_timer(true, make_point(300.0, 300.0)).map_updated);
+  ASSERT_TRUE(update_and_install(make_point(300.0, 300.0)).ndt != nullptr);
   const int calls_after_first_update = loader_.call_count;
 
-  // Below param_.update_distance, so the loader must not even be asked.
-  const auto result = module().callback_timer(true, make_point(310.0, 300.0));
-
-  EXPECT_FALSE(result.map_updated);
+  // Below param_.update_distance, so the node would not even run an update.
+  EXPECT_FALSE(module().needs_update(make_point(310.0, 300.0)));
   EXPECT_EQ(loader_.call_count, calls_after_first_update);
 }
 
-// A failing pcd_loader must not cost us the map we already have. Before, the rebuild path reset
-// ndt_ptr_ before attempting the load, so a transient failure left NDT with no map at all.
+// A failing pcd_loader must not cost us the map we already have. The rebuild path used to clear
+// the NDT before attempting the load, so a transient failure left it with no map at all.
 TEST_F(MapUpdateModuleTest, rebuild_failure_keeps_the_previous_map)
 {
-  ASSERT_TRUE(module().callback_timer(true, make_point(300.0, 300.0)).map_updated);
+  ASSERT_TRUE(update_and_install(make_point(300.0, 300.0)).ndt != nullptr);
   const std::vector<std::string> cells_before = loaded_cell_ids();
   ASSERT_FALSE(cells_before.empty());
 
   // Move beyond map_radius - lidar_radius so that a full rebuild is required, and fail the load.
   loader_.available = false;
-  const auto result = module().callback_timer(true, make_point(300.0, 360.0));
+  const auto result = update_and_install(make_point(300.0, 360.0));
 
-  EXPECT_FALSE(result.map_updated);
+  EXPECT_EQ(result.ndt, nullptr);
   EXPECT_EQ(result.diagnostics.level, MapUpdateModule::DiagnosticLevel::ERROR);
   EXPECT_EQ(loaded_cell_ids(), cells_before);
 }
 
-// The reference position must not advance on a failed load, otherwise the measured distance is
-// reset to zero and a standing vehicle never retries.
-TEST_F(MapUpdateModuleTest, rebuild_failure_is_retried_without_moving)
+// The reference position is what out_of_map_range() and needs_update() are measured against, so
+// advancing it on a failed load would make the module claim coverage it never obtained, silencing
+// both the "not keeping up" report and the caller's decision to stop aligning.
+TEST_F(MapUpdateModuleTest, failed_load_does_not_claim_coverage)
 {
-  ASSERT_TRUE(module().callback_timer(true, make_point(300.0, 300.0)).map_updated);
+  ASSERT_NE(update_and_install(make_point(300.0, 300.0)).ndt, nullptr);
 
   loader_.available = false;
   const auto far_position = make_point(300.0, 360.0);
-  ASSERT_FALSE(module().callback_timer(true, far_position).map_updated);
+  ASSERT_EQ(update_and_install(far_position).ndt, nullptr);
+
+  EXPECT_TRUE(module().out_of_map_range(far_position));
+  EXPECT_TRUE(module().needs_update(far_position));
+}
+
+// A standing vehicle must still recover once the loader comes back.
+TEST_F(MapUpdateModuleTest, rebuild_failure_is_retried_without_moving)
+{
+  ASSERT_TRUE(update_and_install(make_point(300.0, 300.0)).ndt != nullptr);
+
+  loader_.available = false;
+  const auto far_position = make_point(300.0, 360.0);
+  ASSERT_EQ(update_and_install(far_position).ndt, nullptr);
 
   // Same position as the failed attempt: the vehicle has not moved at all.
   loader_.available = true;
-  const auto result = module().callback_timer(true, far_position);
+  const auto result = update_and_install(far_position);
 
-  EXPECT_TRUE(result.map_updated);
+  EXPECT_NE(result.ndt, nullptr);
   EXPECT_FALSE(loaded_cell_ids().empty());
 }
 
@@ -227,13 +251,13 @@ TEST_F(MapUpdateModuleTest, rebuild_failure_is_retried_without_moving)
 // callback does not mistake the accumulated distance for the map falling behind.
 TEST_F(MapUpdateModuleTest, no_change_advances_the_reference_position)
 {
-  ASSERT_TRUE(module().callback_timer(true, make_point(300.0, 300.0)).map_updated);
+  ASSERT_TRUE(update_and_install(make_point(300.0, 300.0)).ndt != nullptr);
 
   // Far outside the fake map, so the loader has nothing to offer.
   const auto empty_area_position = make_point(5000.0, 5000.0);
-  const auto result = module().callback_timer(true, empty_area_position);
+  const auto result = update_and_install(empty_area_position);
 
-  EXPECT_FALSE(result.map_updated);
+  EXPECT_EQ(result.ndt, nullptr);
   EXPECT_FALSE(module().out_of_map_range(empty_area_position));
 }
 
@@ -243,7 +267,7 @@ TEST_F(MapUpdateModuleTest, out_of_map_range_tracks_the_loaded_map)
 
   EXPECT_TRUE(module().out_of_map_range(position));
 
-  ASSERT_TRUE(module().callback_timer(true, position).map_updated);
+  ASSERT_NE(update_and_install(position).ndt, nullptr);
   EXPECT_FALSE(module().out_of_map_range(position));
 
   // map_radius - lidar_radius is 50 m with these parameters.
@@ -257,16 +281,16 @@ TEST_F(MapUpdateModuleTest, loaded_map_publish_drops_removed_cells)
 {
   param_.publish_loaded_map = true;
 
-  const auto first = module().callback_timer(true, make_point(300.0, 300.0));
-  ASSERT_TRUE(first.map_updated);
+  const auto first = update_and_install(make_point(300.0, 300.0));
+  ASSERT_NE(first.ndt, nullptr);
   ASSERT_TRUE(first.loaded_pcd_map.has_value());
   ASSERT_EQ(first.loaded_pcd_map->width, loaded_cell_ids().size() * points_per_cell);
 
   // Moving here keeps the update incremental (25 m > update_distance, < 50 m) while pushing two
   // cells out of map_radius, so the loaded map must lose them.
-  const auto second = module().callback_timer(true, make_point(300.0, 325.0));
+  const auto second = update_and_install(make_point(300.0, 325.0));
 
-  ASSERT_TRUE(second.map_updated);
+  ASSERT_NE(second.ndt, nullptr);
   ASSERT_TRUE(second.loaded_pcd_map.has_value());
   EXPECT_LT(second.loaded_pcd_map->width, first.loaded_pcd_map->width);
   EXPECT_EQ(second.loaded_pcd_map->width, loaded_cell_ids().size() * points_per_cell);

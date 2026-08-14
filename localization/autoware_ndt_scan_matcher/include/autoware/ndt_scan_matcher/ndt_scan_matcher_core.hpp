@@ -87,6 +87,12 @@ public:
 private:
   void callback_timer();
 
+  // Runs one map update and installs the result into ndt_ptr_. Deciding whether align may keep
+  // running against the current map while the new one loads is this node's call, not the map
+  // update module's, so it is made here.
+  void install_map_update(
+    const geometry_msgs::msg::Point & position, DiagnosticsInterface & diagnostics);
+
   void callback_initial_pose(
     geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr initial_pose_msg_ptr);
   void callback_initial_pose_main(

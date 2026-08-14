@@ -93,14 +93,16 @@ public:
     }
   };
 
-  // Result of a map update entry point: whether the NDT map changed, plus the diagnostics to
-  // report for this call.
-  struct UpdateResult
+  // Result of update(): the map to install, plus what to report for this call.
+  struct MapUpdate
   {
-    bool map_updated{false};
+    // The NDT the caller should install in place of the one it currently uses, or null when the
+    // map did not change. Returned by value rather than written through a shared pointer so that
+    // this module never has to reach into state the ROS node owns.
+    NdtPtrType ndt;
     DiagnosticsReport diagnostics;
     // The merged loaded point cloud map for debugging. Set only when publish_loaded_map is enabled
-    // and the map was updated; the ROS node publishes it as-is.
+    // and the map changed; the ROS node publishes it as-is.
     std::optional<sensor_msgs::msg::PointCloud2> loaded_pcd_map;
   };
 
@@ -121,64 +123,51 @@ private:
     builtin_interfaces::msg::Time stamp;
   };
 
+  // The map being built, kept between calls so that each differential load starts from the
+  // generation the caller is currently using. Guarded as a unit because the ROS node drives
+  // update() from two callback groups that can run on different threads, and the underlying
+  // MultiVoxelGridCovariance is not safe against concurrent loads.
   struct BuilderState
   {
-    NdtPtrType secondary_ndt_ptr;
+    NdtPtrType ndt;
+    LoadedPcdMap loaded_pcd_map;
   };
 
 public:
   MapUpdateModule(
-    Guarded<NdtPtrType> & ndt_ptr, HyperParameters::DynamicMapLoading param,
+    HyperParameters::DynamicMapLoading param, pclomp::NdtParams ndt_params,
     PcdLoaderFunction pcd_loader);
 
-  // Periodic map update. Throttled by distance; see needs_update().
-  UpdateResult callback_timer(
-    const bool is_activated, const std::optional<geometry_msgs::msg::Point> & position);
+  // Loads the map around `position` and returns the NDT the caller should install. When to call
+  // this is the caller's decision; see needs_update() and out_of_map_range().
+  [[nodiscard]] MapUpdate update(const geometry_msgs::msg::Point & position);
 
-  // Unconditional map update, used by the initial pose estimation path.
-  // Do not call this function while holding the lock for ndt_ptr_.
-  UpdateResult update_map(const geometry_msgs::msg::Point & position);
+  // True once the vehicle has moved far enough for a periodic update to be worth running.
+  [[nodiscard]] bool needs_update(const geometry_msgs::msg::Point & position);
 
-  // True while the lidar range around `position` is not covered by the loaded map. This is the very
-  // condition that requires a full rebuild, so it is expressed in terms of needs_rebuild().
-  bool out_of_map_range(const geometry_msgs::msg::Point & position);
+  // True while the lidar range around `position` is not covered by the loaded map. The next
+  // update() then rebuilds from scratch instead of loading differentially, and until it succeeds
+  // the caller should treat the map it has installed as unusable at `position`.
+  [[nodiscard]] bool out_of_map_range(const geometry_msgs::msg::Point & position);
 
-private:
   // Distance moved since the position at which the map was last loaded successfully, or nullopt
-  // if no load has succeeded yet.
+  // if no load has succeeded yet. Exposed so that the caller can tell "no map loaded yet" apart
+  // from "the map has fallen behind", which read the same through out_of_map_range().
   [[nodiscard]] std::optional<double> distance_from_last_update(
     const geometry_msgs::msg::Point & position);
 
-  // A full rebuild is required while no map has been loaded yet, and once the vehicle has moved
-  // far enough that the loaded map no longer covers the lidar range.
-  [[nodiscard]] bool needs_rebuild(const std::optional<double> & moved_distance) const;
-
-  // Whether the periodic update should run at all; see param_.update_distance.
-  [[nodiscard]] bool needs_update(const std::optional<double> & moved_distance) const;
-
-  // Returns true if the NDT map was actually replaced.
+private:
+  // Rebuilds the map from scratch, adopting the result only once the load has succeeded so that a
+  // failing pcd_loader leaves the previously loaded map intact.
   // Precondition: builder_state_'s lock must be held; the caller passes in its guarded value.
-  bool update_map_internal(
-    BuilderState & builder_state, const geometry_msgs::msg::Point & position, bool rebuild,
-    DiagnosticsReport & diagnostics);
-
-  // Rebuilds the map from scratch while holding ndt_ptr_'s lock, replacing it only once the load
-  // has succeeded.
-  // Precondition: builder_state_'s lock must be held.
   LoadResult rebuild_map(
-    BuilderState & builder_state, const geometry_msgs::msg::Point & position,
-    DiagnosticsReport & diagnostics);
-
-  // Loads the differential map into the secondary NDT and swaps the result into ndt_ptr_.
-  // Precondition: builder_state_'s lock must be held.
-  LoadResult swap_in_updated_map(
     BuilderState & builder_state, const geometry_msgs::msg::Point & position,
     DiagnosticsReport & diagnostics);
 
   // Loads the differential map around `position` into `ndt`, mirroring the added and removed cells
   // into `loaded_pcd_map` when param_.publish_loaded_map is enabled. Leaves both untouched unless
   // it returns LoadResult::Updated.
-  LoadResult update_ndt(
+  LoadResult load_differential_map(
     const geometry_msgs::msg::Point & position, NdtType & ndt, LoadedPcdMap & loaded_pcd_map,
     DiagnosticsReport & diagnostics);
 
@@ -189,20 +178,13 @@ private:
 
   PcdLoaderFunction pcd_loader_;
 
-  // To prevent deadlocks, acquire locks in the following order:
-  // 1. builder_state_ -> ndt_ptr_
-  // 2. builder_state_ -> last_update_position_
-  // 3. ndt_ptr_ -> last_update_position_
-  //    (the align path holds ndt_ptr_ while it calls out_of_map_range())
-  Guarded<NdtPtrType> & ndt_ptr_;
+  // To prevent deadlocks, acquire builder_state_ before last_update_position_. This module never
+  // touches the NDT the caller has installed, so the caller may hold its own lock across update().
   Guarded<BuilderState> builder_state_;
   Guarded<std::optional<geometry_msgs::msg::Point>> last_update_position_{std::nullopt};
 
   HyperParameters::DynamicMapLoading param_;
-
-  // Cells loaded for the debug publish, only populated when param_.publish_loaded_map is enabled.
-  // Accessed only while builder_state_'s lock is held.
-  LoadedPcdMap loaded_pcd_map_;
+  pclomp::NdtParams ndt_params_;
 };
 
 }  // namespace autoware::ndt_scan_matcher

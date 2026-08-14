@@ -200,7 +200,7 @@ NDTScanMatcher::NDTScanMatcher(const rclcpp::NodeOptions & options)
     this->create_client<MapUpdateModule::GetDifferentialPointCloudMap>("pcd_loader_service");
 
   map_update_module_ = std::make_unique<MapUpdateModule>(
-    ndt_ptr_, param_.dynamic_map_loading,
+    param_.dynamic_map_loading, param_.ndt,
     [this](const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request) {
       return this->get_differential_point_cloud_map(request);
     });
@@ -250,6 +250,40 @@ void NDTScanMatcher::apply_diagnostics_update(
   diagnostics.update_level_and_message(static_cast<int8_t>(report.level), report.message);
 }
 
+void NDTScanMatcher::install_map_update(
+  const geometry_msgs::msg::Point & position, DiagnosticsInterface & diagnostics)
+{
+  // While the loaded map does not cover the current position, hold ndt_ptr_ for the whole update:
+  // align must not keep running against a map that cannot cover the sensor. Otherwise only the
+  // pointer swap is done under the lock, so that the load overlaps with align.
+  const bool block_align_until_loaded = map_update_module_->out_of_map_range(position);
+
+  MapUpdateModule::MapUpdate update;
+  if (block_align_until_loaded) {
+    ndt_ptr_.with([&](auto & ndt_ptr) {
+      update = map_update_module_->update(position);
+      if (update.ndt) {
+        std::swap(ndt_ptr, update.ndt);
+      }
+    });
+  } else {
+    update = map_update_module_->update(position);
+    if (update.ndt) {
+      ndt_ptr_.with([&](auto & ndt_ptr) { std::swap(ndt_ptr, update.ndt); });
+    }
+  }
+
+  // update.ndt now holds the map we just replaced, if any. Releasing it here runs its heavy
+  // destructor outside ndt_ptr_'s lock.
+  update.ndt.reset();
+
+  apply_diagnostics_update(diagnostics, update.diagnostics);
+
+  if (update.loaded_pcd_map) {
+    loaded_pcd_pub_->publish(*update.loaded_pcd_map);
+  }
+}
+
 void NDTScanMatcher::callback_timer()
 {
   const rclcpp::Time ros_time_now = this->now();
@@ -259,11 +293,40 @@ void NDTScanMatcher::callback_timer()
   diagnostics_map_update_->add_key_value("timer_callback_time_stamp", ros_time_now.nanoseconds());
 
   const auto latest_ekf_position = latest_ekf_position_.with([](const auto & pos) { return pos; });
-  const auto result = map_update_module_->callback_timer(is_activated_, latest_ekf_position);
-  apply_diagnostics_update(*diagnostics_map_update_, result.diagnostics);
 
-  if (result.loaded_pcd_map) {
-    loaded_pcd_pub_->publish(*result.loaded_pcd_map);
+  // check is_activated
+  diagnostics_map_update_->add_key_value("is_activated", static_cast<bool>(is_activated_));
+
+  // check is_set_last_update_position
+  diagnostics_map_update_->add_key_value(
+    "is_set_last_update_position", latest_ekf_position.has_value());
+
+  if (!is_activated_) {
+    diagnostics_map_update_->update_level_and_message(
+      diagnostic_msgs::msg::DiagnosticStatus::WARN, "Node is not activated.");
+  } else if (!latest_ekf_position) {
+    diagnostics_map_update_->update_level_and_message(
+      diagnostic_msgs::msg::DiagnosticStatus::WARN,
+      "Cannot find the reference position for map update."
+      "Please check if the EKF odometry is provided to NDT.");
+  } else {
+    const auto moved_distance = map_update_module_->distance_from_last_update(*latest_ekf_position);
+
+    // check distance_last_update_position_to_current_position
+    if (moved_distance) {
+      diagnostics_map_update_->add_key_value(
+        "distance_last_update_position_to_current_position", *moved_distance);
+
+      // A map has been loaded before, but the vehicle has already outrun it.
+      if (map_update_module_->out_of_map_range(*latest_ekf_position)) {
+        diagnostics_map_update_->update_level_and_message(
+          diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Dynamic map loading is not keeping up.");
+      }
+    }
+
+    if (map_update_module_->needs_update(*latest_ekf_position)) {
+      install_map_update(*latest_ekf_position, *diagnostics_map_update_);
+    }
   }
 
   diagnostics_map_update_->publish(ros_time_now);
@@ -1050,13 +1113,10 @@ void NDTScanMatcher::service_ndt_align_main(
   auto initial_pose_msg_in_map_frame =
     autoware::localization_util::transform(req->pose_with_covariance, transform_s2t);
   initial_pose_msg_in_map_frame.header.stamp = req->pose_with_covariance.header.stamp;
-  const auto result =
-    map_update_module_->update_map(initial_pose_msg_in_map_frame.pose.pose.position);
-  apply_diagnostics_update(*diagnostics_ndt_align_, result.diagnostics);
 
-  if (result.loaded_pcd_map) {
-    loaded_pcd_pub_->publish(*result.loaded_pcd_map);
-  }
+  // Unlike the timer, the load is unconditional here: the map has to be available around the
+  // requested pose no matter how far the vehicle has moved since the last update.
+  install_map_update(initial_pose_msg_in_map_frame.pose.pose.position, *diagnostics_ndt_align_);
 
   ndt_ptr_.with([&](auto & ndt_ptr) {
     // check is_set_map_points
