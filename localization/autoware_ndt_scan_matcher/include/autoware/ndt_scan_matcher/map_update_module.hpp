@@ -137,11 +137,17 @@ private:
     builtin_interfaces::msg::Time stamp;
   };
 
-  // The map being built, kept between calls so that each differential load starts from the
-  // generation the caller is currently using. Guarded as a unit because the ROS node drives
-  // update() from two callback groups that can run on different threads, and the underlying
-  // MultiVoxelGridCovariance is not safe against concurrent loads.
-  struct BuilderState
+  // The map this module keeps cached. Its cell ids are what every request declares as `cached_ids`,
+  // which is what makes each load differential; each successful update() hands the caller a copy
+  // and leaves this behind, so the next load starts from the same generation the caller is using
+  // rather than one behind it. Note that cells leave this map as well as enter it, following the
+  // loader's ids_to_remove.
+  //
+  // The two representations are guarded as a unit because they have to describe the same set of
+  // cells, and because the ROS node drives update() from two callback groups that can run on
+  // different threads while the underlying MultiVoxelGridCovariance is not safe against concurrent
+  // loads.
+  struct CachedMap
   {
     NdtPtrType ndt;
     LoadedPcdMap loaded_pcd_map;
@@ -171,9 +177,9 @@ public:
 private:
   // Rebuilds the map from scratch, adopting the result only once the load has succeeded so that a
   // failing pcd_loader leaves the previously loaded map intact.
-  // Precondition: builder_state_'s lock must be held; the caller passes in its guarded value.
+  // Precondition: cached_map_'s lock must be held; the caller passes in its guarded value.
   LoadResult rebuild_map(
-    BuilderState & builder_state, const geometry_msgs::msg::Point & position,
+    CachedMap & cached_map, const geometry_msgs::msg::Point & position,
     DiagnosticsReport & diagnostics);
 
   // Loads the differential map around `position` into `ndt`, mirroring the added and removed cells
@@ -202,9 +208,9 @@ private:
 
   PcdLoaderFunction pcd_loader_;
 
-  // To prevent deadlocks, acquire builder_state_ before last_update_position_. This module never
+  // To prevent deadlocks, acquire cached_map_ before last_update_position_. This module never
   // touches the NDT the caller has installed, so the caller may hold its own lock across update().
-  Guarded<BuilderState> builder_state_;
+  Guarded<CachedMap> cached_map_;
   Guarded<std::optional<geometry_msgs::msg::Point>> last_update_position_{std::nullopt};
 
   Params param_;

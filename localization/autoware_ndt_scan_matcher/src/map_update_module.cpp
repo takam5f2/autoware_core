@@ -32,9 +32,9 @@ MapUpdateModule::MapUpdateModule(
   Params param, pclomp::NdtParams ndt_params, PcdLoaderFunction pcd_loader)
 : pcd_loader_(std::move(pcd_loader)), param_(param), ndt_params_(ndt_params)
 {
-  builder_state_.with([&](auto & builder_state) {
-    builder_state.ndt = std::make_shared<NdtType>();
-    builder_state.ndt->setParams(ndt_params_);
+  cached_map_.with([&](auto & cached_map) {
+    cached_map.ndt = std::make_shared<NdtType>();
+    cached_map.ndt->setParams(ndt_params_);
   });
 }
 
@@ -43,16 +43,16 @@ MapUpdateModule::MapUpdate MapUpdateModule::update(const geometry_msgs::msg::Poi
   MapUpdate result;
   DiagnosticsReport & diagnostics = result.diagnostics;
 
-  builder_state_.with([&](auto & builder_state) {
+  cached_map_.with([&](auto & cached_map) {
     // A rebuild is needed exactly while the loaded map does not cover the lidar range, which is
     // what out_of_map_range() reports.
     const bool rebuild = out_of_map_range(position);
     diagnostics.add_key_value({"is_need_rebuild", rebuild});
 
     const LoadResult load_result =
-      rebuild ? rebuild_map(builder_state, position, diagnostics)
-              : load_differential_map(
-                  position, *builder_state.ndt, builder_state.loaded_pcd_map, diagnostics);
+      rebuild
+        ? rebuild_map(cached_map, position, diagnostics)
+        : load_differential_map(position, *cached_map.ndt, cached_map.loaded_pcd_map, diagnostics);
 
     // check is_updated_map
     diagnostics.add_key_value({"is_updated_map", load_result == LoadResult::Updated});
@@ -73,12 +73,12 @@ MapUpdateModule::MapUpdate MapUpdateModule::update(const geometry_msgs::msg::Poi
       return;
     }
 
-    // Hand out a copy. builder_state.ndt stays here as the master for the next differential load,
-    // so that its cached cell ids never fall a generation behind what the caller is using.
-    result.ndt = std::make_shared<NdtType>(*builder_state.ndt);
+    // Hand out a copy. cached_map.ndt stays behind as the starting point for the next differential
+    // load, so that its cached cell ids never fall a generation behind what the caller is using.
+    result.ndt = std::make_shared<NdtType>(*cached_map.ndt);
 
     if (param_.publish_loaded_map) {
-      result.loaded_pcd_map = merge_loaded_pcd_map(builder_state.loaded_pcd_map, diagnostics);
+      result.loaded_pcd_map = merge_loaded_pcd_map(cached_map.loaded_pcd_map, diagnostics);
     }
   });
 
@@ -111,7 +111,7 @@ std::optional<double> MapUpdateModule::distance_from_last_update(
 }
 
 MapUpdateModule::LoadResult MapUpdateModule::rebuild_map(
-  BuilderState & builder_state, const geometry_msgs::msg::Point & position,
+  CachedMap & cached_map, const geometry_msgs::msg::Point & position,
   DiagnosticsReport & diagnostics)
 {
   // Load into a fresh NDT and adopt it only once the load has succeeded. Clearing the existing one
@@ -133,8 +133,8 @@ MapUpdateModule::LoadResult MapUpdateModule::rebuild_map(
     return load_result;
   }
 
-  builder_state.ndt = std::move(rebuilt_ndt);
-  builder_state.loaded_pcd_map = std::move(rebuilt_pcd_map);
+  cached_map.ndt = std::move(rebuilt_ndt);
+  cached_map.loaded_pcd_map = std::move(rebuilt_pcd_map);
 
   return LoadResult::Updated;
 }
