@@ -16,7 +16,6 @@
 #define AUTOWARE__NDT_SCAN_MATCHER__MAP_UPDATE_MODULE_HPP_
 
 #include "guarded.hpp"
-#include "hyper_parameters.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
 
 #include <builtin_interfaces/msg/time.hpp>
@@ -54,6 +53,21 @@ public:
   // or nullptr if the map could not be fetched (e.g. the service is unavailable).
   using PcdLoaderFunction = std::function<GetDifferentialPointCloudMap::Response::SharedPtr(
     const GetDifferentialPointCloudMap::Request::SharedPtr &)>;
+
+  // Owned by this module rather than by HyperParameters so that declaring it costs no dependency
+  // on rclcpp. HyperParameters embeds this type and fills it in from the node's parameters.
+  struct Params
+  {
+    // How far the vehicle has to move before the periodic update runs again [m].
+    double update_distance{};
+    // Radius of the map requested from the pcd loader [m].
+    double map_radius{};
+    // Radius of the input lidar range [m]. Once map_radius - lidar_radius is exceeded the loaded
+    // map no longer covers the sensor and has to be rebuilt.
+    double lidar_radius{};
+    // Whether to produce the merged loaded map for the debug publish.
+    bool publish_loaded_map{};
+  };
 
   // Severity of a diagnostics update. Mirrors diagnostic_msgs::msg::DiagnosticStatus levels so
   // this module needs no ROS diagnostics dependency.
@@ -134,9 +148,7 @@ private:
   };
 
 public:
-  MapUpdateModule(
-    HyperParameters::DynamicMapLoading param, pclomp::NdtParams ndt_params,
-    PcdLoaderFunction pcd_loader);
+  MapUpdateModule(Params param, pclomp::NdtParams ndt_params, PcdLoaderFunction pcd_loader);
 
   // Loads the map around `position` and returns the NDT the caller should install. When to call
   // this is the caller's decision; see needs_update() and out_of_map_range().
@@ -195,7 +207,7 @@ private:
   Guarded<BuilderState> builder_state_;
   Guarded<std::optional<geometry_msgs::msg::Point>> last_update_position_{std::nullopt};
 
-  HyperParameters::DynamicMapLoading param_;
+  Params param_;
   pclomp::NdtParams ndt_params_;
 };
 

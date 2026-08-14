@@ -29,8 +29,7 @@ namespace autoware::ndt_scan_matcher
 {
 
 MapUpdateModule::MapUpdateModule(
-  HyperParameters::DynamicMapLoading param, pclomp::NdtParams ndt_params,
-  PcdLoaderFunction pcd_loader)
+  Params param, pclomp::NdtParams ndt_params, PcdLoaderFunction pcd_loader)
 : pcd_loader_(std::move(pcd_loader)), param_(param), ndt_params_(ndt_params)
 {
   builder_state_.with([&](auto & builder_state) {

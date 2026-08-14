@@ -172,7 +172,7 @@ protected:
     return installed_ndt_ ? installed_ndt_->getCurrentMapIDs() : std::vector<std::string>{};
   }
 
-  HyperParameters::DynamicMapLoading param_{};
+  MapUpdateModule::Params param_{};
   FakePcdLoader loader_;
   NdtPtrType installed_ndt_;
   std::unique_ptr<MapUpdateModule> module_;
