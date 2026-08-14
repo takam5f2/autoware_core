@@ -89,6 +89,13 @@ if(BUILD_TESTING)
     test/test_ndt_scan_matcher_helper.cpp
   )
   target_link_libraries(test_ndt_scan_matcher_helper ${PROJECT_NAME})
+
+  # MapUpdateModule takes its pcd loader as an injected function, so it can be driven directly
+  # without bringing up a node.
+  ament_auto_add_gtest(test_map_update_module
+    test/test_map_update_module.cpp
+  )
+  target_link_libraries(test_map_update_module ${PROJECT_NAME} multigrid_ndt_omp ${PCL_LIBRARIES})
 endif()
 
 autoware_ament_auto_package(
