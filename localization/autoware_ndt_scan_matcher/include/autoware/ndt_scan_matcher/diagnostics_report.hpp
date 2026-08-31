@@ -55,6 +55,14 @@ enum class LogSite : uint8_t {
   PoseBufferStampMismatch,      // INFO
   PoseBufferTimeoutViolation,   // WARN
   PoseBufferDistanceViolation,  // WARN
+
+  // PoseInitializationModule. The two Align* warnings were throttled at 1000 ms; the other three
+  // were not.
+  AlignNoInputTarget,  // WARN, throttled
+  AlignNoInputSource,  // WARN, throttled
+  AlignUnstableScore,  // WARN
+  AlignPoseInput,      // DEBUG
+  AlignPoseOutput,     // DEBUG
 };
 
 // One log line a core module would have emitted. Modules record; the node logs.

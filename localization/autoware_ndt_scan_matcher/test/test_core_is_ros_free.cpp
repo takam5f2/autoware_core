@@ -26,6 +26,7 @@
 #include <autoware/ndt_scan_matcher/guarded.hpp>
 #include <autoware/ndt_scan_matcher/map_update_module.hpp>
 #include <autoware/ndt_scan_matcher/particle.hpp>
+#include <autoware/ndt_scan_matcher/pose_initialization_module.hpp>
 #include <autoware/ndt_scan_matcher/pose_interpolation_buffer.hpp>
 
 namespace
