@@ -35,6 +35,7 @@
 #include <pcl/point_types.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -230,6 +231,36 @@ public:
   [[nodiscard]] std::optional<geometry_msgs::msg::Point> latest_ekf_position();
 
 private:
+  // What the alignment produced and how it was judged, carried from `align_and_judge()` to
+  // `build_output()`. Not part of the interface: it exists so that the three phases of a scan
+  // match read as three functions rather than one of three hundred lines.
+  struct Alignment
+  {
+    pclomp::NdtResult ndt_result;
+    geometry_msgs::msg::Pose result_pose;
+    std::vector<geometry_msgs::msg::Pose> transformation_array;
+    PoseInterpolationBuffer::InterpolateResult interpolation;
+    Eigen::Matrix4f initial_pose_matrix{Eigen::Matrix4f::Identity()};
+    bool is_converged{};
+  };
+
+  // Phase one: the checks that need only the message and the transform. Empty when one of them
+  // rejects the scan; the scan in base frame otherwise.
+  [[nodiscard]] std::optional<CloudPtr> prepare_scan(
+    const ScanInput & input, DiagnosticsReport & report) const;
+
+  // Phase two: the gates that need the NDT and the interpolated pose, the alignment itself, and
+  // the judgement of its result. Empty when a gate rejects it.
+  [[nodiscard]] std::optional<Alignment> align_and_judge(
+    const ScanInput & input, NdtType & ndt, MapUpdateModule & map_update,
+    const CloudPtr & sensor_points_in_baselink_frame, DiagnosticsReport & report);
+
+  // Phase three: the covariance, the last two keys, and everything the caller publishes.
+  [[nodiscard]] ScanMatchingOutput build_output(
+    const ScanInput & input, NdtType & ndt, const Alignment & alignment,
+    const CloudPtr & sensor_points_in_baselink_frame,
+    const std::chrono::system_clock::time_point & exe_start_time, DiagnosticsReport & report);
+
   struct CovarianceEstimate
   {
     Eigen::Matrix2d covariance{Eigen::Matrix2d::Identity()};
