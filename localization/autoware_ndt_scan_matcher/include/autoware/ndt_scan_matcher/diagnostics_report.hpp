@@ -56,7 +56,7 @@ enum class LogSite : uint8_t {
   PoseBufferTimeoutViolation,   // WARN
   PoseBufferDistanceViolation,  // WARN
 
-  // PoseInitializationModule. The two Align* warnings were throttled at 1000 ms; the other three
+  // PoseInitializationSearch. The two Align* warnings were throttled at 1000 ms; the other three
   // were not.
   AlignNoInputTarget,  // WARN, throttled
   AlignNoInputSource,  // WARN, throttled

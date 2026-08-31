@@ -22,7 +22,7 @@
 #include "hyper_parameters.hpp"
 #include "map_update_module.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
-#include "pose_initialization_module.hpp"
+#include "pose_initialization_search.hpp"
 #include "pose_interpolation_buffer.hpp"
 
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
@@ -117,7 +117,7 @@ private:
 
   // Publishes one step of the pose initialization search: the debug markers, batched as before,
   // and the scan aligned by that particle.
-  void publish_pose_initialization_progress(const PoseInitializationModule::Progress & progress);
+  void publish_pose_initialization_progress(const PoseInitializationSearch::Progress & progress);
 
   void transform_sensor_measurement(
     const std::string & source_frame, const std::string & target_frame,
@@ -241,7 +241,7 @@ private:
   std::unique_ptr<DiagnosticsInterface> diagnostics_ndt_align_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_trigger_node_;
   std::unique_ptr<MapUpdateModule> map_update_module_;
-  std::unique_ptr<PoseInitializationModule> pose_initialization_module_;
+  PoseInitializationSearch::Params pose_initialization_params_;
   // Accumulates between progress callbacks so the markers go out in batches, as before.
   visualization_msgs::msg::MarkerArray monte_carlo_marker_array_;
   std::unique_ptr<autoware_utils_logging::LoggerLevelConfigure> logger_configure_;

@@ -15,7 +15,7 @@
 #include <autoware/localization_util/matrix_type.hpp>
 #include <autoware/localization_util/tree_structured_parzen_estimator.hpp>
 #include <autoware/localization_util/util_func.hpp>
-#include <autoware/ndt_scan_matcher/pose_initialization_module.hpp>
+#include <autoware/ndt_scan_matcher/pose_initialization_search.hpp>
 #include <autoware_utils_pcl/transforms.hpp>
 #include <tf2/LinearMath/Quaternion.hpp>
 
@@ -69,18 +69,7 @@ std::string pose_with_cov_log_line(
 
 }  // namespace
 
-PoseInitializationModule::PoseInitializationModule(Params params) : param_(std::move(params))
-{
-}
-
-PoseInitializationModule::Search PoseInitializationModule::begin(
-  NdtType & ndt, const CloudPtr & sensor_points_in_baselink_frame,
-  const PoseWithCovarianceStamped & initial_pose_in_map_frame) const
-{
-  return Search{param_, ndt, sensor_points_in_baselink_frame, initial_pose_in_map_frame};
-}
-
-PoseInitializationModule::Search::Search(
+PoseInitializationSearch::PoseInitializationSearch(
   Params param, NdtType & ndt, CloudPtr sensor_points_in_baselink_frame,
   PoseWithCovarianceStamped initial_pose_in_map_frame)
 : param_(std::move(param)),
@@ -128,9 +117,9 @@ PoseInitializationModule::Search::Search(
     sample_stddev);
 }
 
-PoseInitializationModule::Search::~Search() = default;
+PoseInitializationSearch::~PoseInitializationSearch() = default;
 
-std::optional<PoseInitializationModule::Progress> PoseInitializationModule::Search::next()
+std::optional<PoseInitializationSearch::Progress> PoseInitializationSearch::next()
 {
   if (!tpe_ || index_ >= param_.particles_num) {
     return std::nullopt;
@@ -184,7 +173,7 @@ std::optional<PoseInitializationModule::Progress> PoseInitializationModule::Sear
   return progress;
 }
 
-PoseInitializationModule::Result PoseInitializationModule::Search::finish()
+PoseInitializationSearch::Result PoseInitializationSearch::finish()
 {
   Result result;
   result.diagnostics = std::move(diagnostics_);
