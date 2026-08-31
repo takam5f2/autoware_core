@@ -81,9 +81,7 @@ public:
   };
 
 public:
-  MapUpdateModule(
-    Guarded<NdtPtrType> & ndt_ptr, Params param,
-    PcdLoaderFunction pcd_loader);
+  MapUpdateModule(Guarded<NdtPtrType> & ndt_ptr, Params param, PcdLoaderFunction pcd_loader);
 
   bool out_of_map_range(const geometry_msgs::msg::Point & position);
 

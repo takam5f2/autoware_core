@@ -26,8 +26,7 @@ namespace autoware::ndt_scan_matcher
 {
 
 MapUpdateModule::MapUpdateModule(
-  Guarded<NdtPtrType> & ndt_ptr, Params param,
-  PcdLoaderFunction pcd_loader)
+  Guarded<NdtPtrType> & ndt_ptr, Params param, PcdLoaderFunction pcd_loader)
 : pcd_loader_(std::move(pcd_loader)), ndt_ptr_(ndt_ptr), param_(param)
 {
   auto copied = builder_state_.with([&](auto & builder_state) {
