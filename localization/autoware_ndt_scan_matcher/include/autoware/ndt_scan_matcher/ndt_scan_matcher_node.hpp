@@ -203,6 +203,10 @@ private:
   std::unique_ptr<DiagnosticsInterface> diagnostics_map_update_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_ndt_align_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_trigger_node_;
+  // Consecutive scans that produced nothing to publish, reset by a success or by deactivation.
+  // A member rather than a function-local static: one counter per node, not one per process.
+  int64_t skipping_publish_num_{0};
+
   std::unique_ptr<MapUpdateModule> map_update_module_;
   std::unique_ptr<ScanMatchingModule> scan_matching_module_;
   PoseInitializationSearch::Params pose_initialization_params_;

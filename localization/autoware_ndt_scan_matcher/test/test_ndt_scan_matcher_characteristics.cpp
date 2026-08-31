@@ -47,14 +47,9 @@
 /// though only some runs get that far, because the level assertion ahead of them aborts the body
 /// first. Debugging a single case directly is fine; set `ROS_DOMAIN_ID` yourself first.
 ///
-/// **`skipping_publish_num` is a function-local `static`**: one counter, shared by every node this
-/// binary builds. In declaration order it stays under the shipped threshold of 5 -- it peaks at 4,
-/// in `ActivatingClearsTheInitialPoseBuffer` -- so no case trips the "exceed limit" WARN by
-/// accident; `SkipCounterWarnsWhenItReachesTheThreshold` pins that WARN at a threshold of its own,
-/// and the non-converging cases reset the counter on exit. `--gtest_shuffle` can still stack enough
-/// rejections to reach 5 on a shipped-threshold node. That is harmless while nothing compares a
-/// whole `scan_matching_status` message or expects OK from a case that already warns -- the
-/// hazard is for whoever adds a case that does. Shuffling has been measured to pass.
+/// `skipping_publish_num` counts per node, so a case that leaves it advanced cannot hand the next
+/// one a value it does not expect. It was a function-local `static` shared across the whole binary
+/// when these cases were written, which is why several of them used to reset it on the way out.
 
 #include "harness/ndt_harness.hpp"
 #include "harness/stimulus.hpp"
@@ -155,64 +150,6 @@ std::unique_ptr<NdtHarness> make_ready_harness(std::vector<rclcpp::Parameter> ov
 bool contains(const std::string & haystack, const std::string & needle)
 {
   return haystack.find(needle) != std::string::npos;
-}
-
-/// @brief Runs `action` on destruction, so cleanup happens on the failing paths too.
-///
-/// A failed `ASSERT_*` returns from the test body immediately, which would skip any cleanup written
-/// as ordinary trailing statements.
-///
-/// `action` runs inside a destructor, which is implicitly `noexcept`, so anything it lets escape
-/// would call `std::terminate`. Cleanup here reaches into rclcpp, which throws, and it runs exactly
-/// when a case has already failed — so an unguarded throw would take the gtest report down with it,
-/// which is the opposite of the point. Failures are reported instead.
-class ScopeExit
-{
-public:
-  explicit ScopeExit(std::function<void()> action) : action_(std::move(action)) {}
-  ~ScopeExit()
-  {
-    try {
-      action_();
-    } catch (const std::exception & e) {
-      ADD_FAILURE() << "cleanup threw: " << e.what();
-    } catch (...) {
-      ADD_FAILURE() << "cleanup threw a non-standard exception";
-    }
-  }
-  ScopeExit(const ScopeExit &) = delete;
-  ScopeExit & operator=(const ScopeExit &) = delete;
-  ScopeExit(ScopeExit &&) = delete;
-  ScopeExit & operator=(ScopeExit &&) = delete;
-
-private:
-  std::function<void()> action_;
-};
-
-/// @brief Deactivate the node and drive one more scan, which resets the skip counter.
-///
-/// `skipping_publish_num` is a function-local `static` shared by every node this binary builds, so
-/// a case that leaves it advanced hands the next one a value it does not expect. The
-/// `!is_activated_` branch is one of the counter's two resets, and driving a scan through it both
-/// pins that branch and leaves the counter clean. Called from a `ScopeExit` so a failed assertion
-/// cannot skip it.
-///
-/// `ADD_FAILURE` plus an explicit return rather than `ASSERT_*`, because `ASSERT_*` compiles only
-/// in a function returning void and this is called from a lambda that may not stay one.
-void reset_skip_counter_via_deactivation(NdtHarness & harness)
-{
-  if (harness.deactivate() != std::optional<bool>(true)) {
-    ADD_FAILURE() << "could not deactivate the node to reset the skip counter";
-    return;
-  }
-  // No initial pose: the activation gate rejects the scan before one would matter.
-  ScanDrive reset_drive;
-  const auto reset_outcome = harness.drive_one_scan(reset_drive);
-  if (!reset_outcome.has_value()) {
-    ADD_FAILURE() << "the deactivated scan produced no scan_matching_status";
-    return;
-  }
-  EXPECT_EQ(reset_outcome->diag.value("skipping_publish_num"), "0");
 }
 
 /// @brief Wait until each capture has matched the node's publisher.
@@ -525,8 +462,8 @@ TEST(NdtScanMatcherCharacteristics, ActivatingClearsTheInitialPoseBuffer)
 /// Reaching `validation.skipping_publish_num` appends the "exceed limit" WARN, and the comparison
 /// is inclusive.
 ///
-/// The counter is a function-local `static` shared by every node this binary builds, so the case
-/// zeroes it first: a rejected scan while deactivated takes the `!is_activated_` arm. One rejected
+/// The case drives a rejected scan while deactivated first: that takes the `!is_activated_` arm,
+/// which is the counter's other reset and is pinned nowhere else. One rejected
 /// scan while activated then reads 1, which against a threshold of 1 is the boundary -- `>=` warns
 /// where `>` would not.
 TEST(NdtScanMatcherCharacteristics, SkipCounterWarnsWhenItReachesTheThreshold)
@@ -928,7 +865,6 @@ TEST(NdtScanMatcherCharacteristics, NonConvergedScanSuppressesPoseButStillBroadc
   ASSERT_TRUE(harness->ensure_map_loaded());
 
   // After the map load, so a failure there is not buried under a cleanup that has nothing to undo.
-  const ScopeExit reset_skip_counter([&] { reset_skip_counter_via_deactivation(*harness); });
 
   // Act
   ScanDrive drive;
@@ -980,7 +916,6 @@ TEST(NdtScanMatcherCharacteristics, IterationLimitAloneSuppressesTheConvergedPos
   ASSERT_TRUE(harness->ensure_map_loaded());
 
   // Non-converging while activated, so this case advances the shared skip counter too.
-  const ScopeExit reset_skip_counter([&] { reset_skip_counter_via_deactivation(*harness); });
 
   // Act
   ScanDrive drive;
@@ -1163,8 +1098,6 @@ TEST(NdtScanMatcherCharacteristics, UnknownConvergedParamTypeIsAnErrorAfterAlign
 
   ASSERT_TRUE(harness->ensure_map_loaded());
 
-  const ScopeExit reset_skip_counter([&] { reset_skip_counter_via_deactivation(*harness); });
-
   // Act
   ScanDrive drive;
   drive.initial_pose = InitialPoseSpec{};
@@ -1208,8 +1141,6 @@ TEST(NdtScanMatcherCharacteristics, TransformProbabilityTypeIsJudgedByItsOwnThre
   ASSERT_TRUE(wait_for_capture_discovery(*harness, ndt_pose));
 
   ASSERT_TRUE(harness->ensure_map_loaded());
-
-  const ScopeExit reset_skip_counter([&] { reset_skip_counter_via_deactivation(*harness); });
 
   // Act
   ScanDrive drive;
@@ -1358,7 +1289,6 @@ TEST(NdtScanMatcherCharacteristics, InitialPoseDistanceToleranceReachesTheInterp
   ASSERT_EQ(harness->activate(), std::optional<bool>(true));
 
   // Rejected while activated, so the shared skip counter advances.
-  const ScopeExit reset_skip_counter([&] { reset_skip_counter_via_deactivation(*harness); });
 
   // Act
   ScanDrive drive;
@@ -1481,7 +1411,6 @@ TEST(NdtScanMatcherCharacteristics, ReliableIgnoresTheTransformProbabilityThresh
        "score_estimation.converged_param_nearest_voxel_transformation_likelihood", 0.0)});
 
   // The readying scan did not converge under this threshold, so the shared skip counter advanced.
-  const ScopeExit reset_skip_counter([&] { reset_skip_counter_via_deactivation(*harness); });
 
   // Act
   const auto request = make_pose_at(harness->now(), map_center_x, map_center_y);

@@ -446,13 +446,12 @@ void NdtScanMatcherNode::callback_sensor_points(
   const bool is_succeed_scan_matching = match.succeeded;
 
   // check skipping_publish_num
-  static int64_t skipping_publish_num = 0;
-  skipping_publish_num =
-    ((is_succeed_scan_matching || !is_activated_) ? 0 : (skipping_publish_num + 1));
-  report.add_key_value({"skipping_publish_num", skipping_publish_num});
-  if (skipping_publish_num >= param_.validation.skipping_publish_num) {
+  skipping_publish_num_ =
+    ((is_succeed_scan_matching || !is_activated_) ? 0 : (skipping_publish_num_ + 1));
+  report.add_key_value({"skipping_publish_num", skipping_publish_num_});
+  if (skipping_publish_num_ >= param_.validation.skipping_publish_num) {
     std::stringstream message;
-    message << "skipping_publish_num exceed limit (" << skipping_publish_num << " times).";
+    message << "skipping_publish_num exceed limit (" << skipping_publish_num_ << " times).";
     report.update_level_and_message(DiagnosticLevel::WARN, message.str());
   }
 
