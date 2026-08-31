@@ -88,6 +88,36 @@ struct DiagnosticsReport
 
   void add_key_value(DiagnosticKeyValue key_value) { key_values.push_back(std::move(key_value)); }
 
+  // A yes/no precondition, which is the shape almost every check in this package has: record it
+  // as a key either way, and on failure raise the level and append the message. Returns `value`,
+  // so a call site reads as the condition it is:
+  //
+  //   if (!diagnostics.check("is_set_map_points", ndt.hasTarget(), WARN, "No InputTarget...")) {
+  //     return result;
+  //   }
+  bool check(
+    std::string key, const bool value, const DiagnosticLevel level_on_failure,
+    const std::string & message_on_failure)
+  {
+    add_key_value({std::move(key), value});
+    if (!value) {
+      update_level_and_message(level_on_failure, message_on_failure);
+    }
+    return value;
+  }
+
+  // As above, and the failure also goes to the log site it used to be logged from.
+  bool check(
+    std::string key, const bool value, const DiagnosticLevel level_on_failure,
+    const std::string & message_on_failure, const LogSite site)
+  {
+    if (!check(std::move(key), value, level_on_failure, message_on_failure)) {
+      logs.push_back({site, message_on_failure});
+      return false;
+    }
+    return true;
+  }
+
   // Accumulates like DiagnosticsInterface: raises the level and appends the message.
   void update_level_and_message(DiagnosticLevel new_level, const std::string & new_message)
   {

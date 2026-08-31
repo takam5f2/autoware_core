@@ -74,30 +74,24 @@ PoseInitializationModule::PoseInitializationModule(Params params, ProgressCallba
 {
 }
 
-std::optional<PoseInitializationModule::Result> PoseInitializationModule::estimate(
+PoseInitializationModule::Result PoseInitializationModule::estimate(
   NdtType & ndt, const CloudPtr & sensor_points_in_baselink_frame,
-  const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_in_map_frame,
-  DiagnosticsReport & diagnostics)
+  const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_in_map_frame)
 {
-  // check is_set_map_points
-  const bool is_set_map_points = ndt.hasTarget();
-  diagnostics.add_key_value({"is_set_map_points", is_set_map_points});
-  if (!is_set_map_points) {
-    const std::string message =
-      "No InputTarget. Please check the map file and the map_loader service";
-    diagnostics.update_level_and_message(DiagnosticLevel::WARN, message);
-    diagnostics.logs.push_back({LogSite::AlignNoInputTarget, message});
-    return std::nullopt;
+  Result result;
+  DiagnosticsReport & diagnostics = result.diagnostics;
+
+  if (!diagnostics.check(
+        "is_set_map_points", ndt.hasTarget(), DiagnosticLevel::WARN,
+        "No InputTarget. Please check the map file and the map_loader service",
+        LogSite::AlignNoInputTarget)) {
+    return result;
   }
 
-  // check is_set_sensor_points
-  const bool is_set_sensor_points = (sensor_points_in_baselink_frame != nullptr);
-  diagnostics.add_key_value({"is_set_sensor_points", is_set_sensor_points});
-  if (!is_set_sensor_points) {
-    const std::string message = "No InputSource. Please check the input lidar topic";
-    diagnostics.update_level_and_message(DiagnosticLevel::WARN, message);
-    diagnostics.logs.push_back({LogSite::AlignNoInputSource, message});
-    return std::nullopt;
+  if (!diagnostics.check(
+        "is_set_sensor_points", sensor_points_in_baselink_frame != nullptr, DiagnosticLevel::WARN,
+        "No InputSource. Please check the input lidar topic", LogSite::AlignNoInputSource)) {
+    return result;
   }
 
   diagnostics.logs.push_back(
@@ -181,24 +175,26 @@ std::optional<PoseInitializationModule::Result> PoseInitializationModule::estima
     std::begin(particle_array), std::end(particle_array),
     [](const Particle & lhs, const Particle & rhs) { return lhs.score < rhs.score; });
 
-  Result result;
-  result.pose_with_covariance.header.stamp = initial_pose_in_map_frame.header.stamp;
-  result.pose_with_covariance.header.frame_id = param_.map_frame;
-  result.pose_with_covariance.pose.pose = best_particle_ptr->result_pose;
-  result.score = best_particle_ptr->score;
-  result.reliable = (param_.converged_param_nearest_voxel_transformation_likelihood < result.score);
+  Estimate estimate;
+  estimate.pose_with_covariance.header.stamp = initial_pose_in_map_frame.header.stamp;
+  estimate.pose_with_covariance.header.frame_id = param_.map_frame;
+  estimate.pose_with_covariance.pose.pose = best_particle_ptr->result_pose;
+  estimate.score = best_particle_ptr->score;
+  estimate.reliable =
+    (param_.converged_param_nearest_voxel_transformation_likelihood < estimate.score);
 
   diagnostics.logs.push_back(
     {LogSite::AlignPoseOutput,
-     pose_with_cov_log_line("align_pose_output", result.pose_with_covariance)});
-  diagnostics.add_key_value({"best_particle_score", result.score});
+     pose_with_cov_log_line("align_pose_output", estimate.pose_with_covariance)});
+  diagnostics.add_key_value({"best_particle_score", estimate.score});
 
-  if (!result.reliable) {
+  if (!estimate.reliable) {
     std::stringstream message;
-    message << "Initial Pose Estimation is Unstable. Score is " << result.score;
+    message << "Initial Pose Estimation is Unstable. Score is " << estimate.score;
     diagnostics.logs.push_back({LogSite::AlignUnstableScore, message.str()});
   }
 
+  result.estimate = std::move(estimate);
   return result;
 }
 

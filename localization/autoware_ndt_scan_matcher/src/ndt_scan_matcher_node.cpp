@@ -1148,24 +1148,23 @@ void NDTScanMatcher::service_ndt_align_main(
 
   publish_loaded_map_if_present(result);
 
-  DiagnosticsReport align_report;
-  std::optional<PoseInitializationModule::Result> estimate;
+  PoseInitializationModule::Result align_result;
   // The lock is held across the search, as before: it aligns against the installed NDT.
   ndt_ptr_.with([&](auto & ndt_ptr) {
-    estimate = pose_initialization_module_->estimate(
-      *ndt_ptr, sensor_points_in_baselink_frame_, initial_pose_msg_in_map_frame, align_report);
+    align_result = pose_initialization_module_->estimate(
+      *ndt_ptr, sensor_points_in_baselink_frame_, initial_pose_msg_in_map_frame);
   });
-  replay_logs(align_report.logs);
-  apply_diagnostics_update(*diagnostics_ndt_align_, align_report);
+  replay_logs(align_result.diagnostics.logs);
+  apply_diagnostics_update(*diagnostics_ndt_align_, align_result.diagnostics);
 
-  if (!estimate) {
+  if (!align_result.estimate) {
     res->success = false;
     return;
   }
 
-  res->reliable = estimate->reliable;
+  res->reliable = align_result.estimate->reliable;
   res->success = true;
-  res->pose_with_covariance = estimate->pose_with_covariance;
+  res->pose_with_covariance = align_result.estimate->pose_with_covariance;
   res->pose_with_covariance.pose.covariance = req->pose_with_covariance.pose.covariance;
 }
 

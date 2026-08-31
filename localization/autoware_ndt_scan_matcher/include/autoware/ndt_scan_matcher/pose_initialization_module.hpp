@@ -71,25 +71,33 @@ public:
   };
   using ProgressCallback = std::function<void(const Progress &)>;
 
-  struct Result
+  struct Estimate
   {
     geometry_msgs::msg::PoseWithCovarianceStamped pose_with_covariance;
     double score{};
     bool reliable{};
   };
 
+  // What one `estimate()` call produced. Returned rather than written through an out-parameter,
+  // matching MapUpdateModule::UpdateResult: the caller applies the reports of the calls it makes
+  // in the order it makes them, which is what keeps the joined diagnostics message in order.
+  struct Result
+  {
+    // Empty when a precondition failed; `diagnostics` says which.
+    std::optional<Estimate> estimate;
+    DiagnosticsReport diagnostics;
+  };
+
   PoseInitializationModule(Params params, ProgressCallback on_progress);
 
-  // Returns nullopt when there is nothing to align: no map in `ndt`, or no scan received yet.
-  // Both are reported through `diagnostics`, which the caller keeps threading through the rest of
-  // the service call.
+  // `Result::estimate` is empty when there is nothing to align: no map in `ndt`, or no scan
+  // received yet.
   //
   // `ndt` is mutated by the search (it aligns from each sampled pose). The caller holds it, and is
   // expected to hold its lock across this call.
-  [[nodiscard]] std::optional<Result> estimate(
+  [[nodiscard]] Result estimate(
     NdtType & ndt, const CloudPtr & sensor_points_in_baselink_frame,
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_in_map_frame,
-    DiagnosticsReport & diagnostics);
+    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_in_map_frame);
 
 private:
   Params param_;
