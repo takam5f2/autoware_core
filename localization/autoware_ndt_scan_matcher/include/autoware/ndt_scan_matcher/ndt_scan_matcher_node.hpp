@@ -48,6 +48,7 @@
 
 #include <fmt/format.h>
 #include <pcl/point_types.h>
+#include <pcl_conversions/pcl_conversions.h>
 
 #ifdef ROS_DISTRO_GALACTIC
 #include <tf2_sensor_msgs/tf2_sensor_msgs.h>
@@ -124,22 +125,88 @@ private:
     const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_input_ptr,
     pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_output_ptr);
 
-  void publish_tf(
-    const rclcpp::Time & sensor_ros_time, const geometry_msgs::msg::Pose & result_pose_msg);
-  void publish_pose(
-    const rclcpp::Time & sensor_ros_time, const geometry_msgs::msg::Pose & result_pose_msg,
-    const std::array<double, 36> & ndt_covariance, const bool is_converged);
-  void publish_point_cloud(
-    const rclcpp::Time & sensor_ros_time, const std::string & frame_id,
-    const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_in_map_ptr);
-  void publish_marker(
-    const rclcpp::Time & sensor_ros_time, const std::vector<geometry_msgs::msg::Pose> & pose_array,
-    NormalDistributionsTransform & ndt_ref);
-  void publish_initial_to_result(
-    const rclcpp::Time & sensor_ros_time, const geometry_msgs::msg::Pose & result_pose_msg,
+  // Everything one scan match produces for the outside world, assembled while the NDT lock is
+  // held and published once it is released. Message types and PODs only, so that this struct can
+  // move into the core module unchanged.
+  //
+  // What is conditional is an `optional`, never a flag: `publish_scan_matching_output()` is
+  // allowed `if (opt)` and nothing else. A `bool` at the publish site is how the asymmetry
+  // `NonConvergedScanSuppressesPoseButStillBroadcastsTf` pins -- tf unconditional, pose only when
+  // converged -- gets broken.
+  struct ScanMatchingOutput
+  {
+    builtin_interfaces::msg::Time stamp;
+
+    // Went out ahead of everything below, from inside the covariance estimate.
+    std::optional<geometry_msgs::msg::PoseArray> multi_ndt_pose;
+    std::optional<geometry_msgs::msg::PoseArray> multi_initial_pose;
+
+    geometry_msgs::msg::PoseWithCovarianceStamped initial_pose_with_covariance;
+    float exe_time_ms{};
+    float transform_probability{};
+    float nearest_voxel_transformation_likelihood{};
+    int32_t iteration_num{};
+
+    geometry_msgs::msg::TransformStamped tf;  // unconditional
+
+    // Engaged together, only when the match converged.
+    std::optional<geometry_msgs::msg::PoseStamped> ndt_pose;
+    std::optional<geometry_msgs::msg::PoseWithCovarianceStamped> ndt_pose_with_covariance;
+
+    visualization_msgs::msg::MarkerArray ndt_marker;
+
+    geometry_msgs::msg::PoseStamped initial_to_result_relative_pose;
+    float initial_to_result_distance{};
+    float initial_to_result_distance_old{};
+    float initial_to_result_distance_new{};
+
+    sensor_msgs::msg::PointCloud2 points_aligned;
+    // Only when someone subscribes: the per-point score colouring is expensive.
+    std::optional<sensor_msgs::msg::PointCloud2> voxel_score_points;
+
+    // The three go together or not at all, following no_ground_points.enable.
+    struct NoGroundScore
+    {
+      sensor_msgs::msg::PointCloud2 points;
+      float transform_probability{};
+      float nearest_voxel_transformation_likelihood{};
+    };
+    std::optional<NoGroundScore> no_ground;
+  };
+
+  void publish_scan_matching_output(const ScanMatchingOutput & output);
+
+  [[nodiscard]] geometry_msgs::msg::TransformStamped make_tf(
+    const builtin_interfaces::msg::Time & sensor_time,
+    const geometry_msgs::msg::Pose & result_pose_msg) const;
+  [[nodiscard]] geometry_msgs::msg::PoseStamped make_pose(
+    const builtin_interfaces::msg::Time & sensor_time,
+    const geometry_msgs::msg::Pose & result_pose_msg) const;
+  [[nodiscard]] geometry_msgs::msg::PoseWithCovarianceStamped make_pose_with_covariance(
+    const builtin_interfaces::msg::Time & sensor_time,
+    const geometry_msgs::msg::Pose & result_pose_msg,
+    const std::array<double, 36> & ndt_covariance) const;
+  // Templated on the point type because the voxel score cloud is PointXYZRGB while the rest are
+  // PointXYZ.
+  template <typename PointT>
+  [[nodiscard]] sensor_msgs::msg::PointCloud2 make_point_cloud(
+    const builtin_interfaces::msg::Time & sensor_time, const std::string & frame_id,
+    const pcl::shared_ptr<pcl::PointCloud<PointT>> & points_in_map) const
+  {
+    sensor_msgs::msg::PointCloud2 points_msg_in_map;
+    pcl::toROSMsg(*points_in_map, points_msg_in_map);
+    points_msg_in_map.header.stamp = sensor_time;
+    points_msg_in_map.header.frame_id = frame_id;
+    return points_msg_in_map;
+  }
+  [[nodiscard]] visualization_msgs::msg::MarkerArray make_ndt_marker(
+    const builtin_interfaces::msg::Time & sensor_time,
+    const std::vector<geometry_msgs::msg::Pose> & pose_array, int marker_slot_num) const;
+  void fill_initial_to_result(
+    ScanMatchingOutput & output, const geometry_msgs::msg::Pose & result_pose_msg,
     const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_cov_msg,
     const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_old_msg,
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_new_msg);
+    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_new_msg) const;
   void publish_loaded_map_if_present(
     const MapUpdateModule::UpdateResult & result,
     const std::optional<rclcpp::Time> & stamp = std::nullopt) const;
