@@ -115,9 +115,9 @@ private:
       req,
     autoware_internal_localization_msgs::srv::PoseWithCovarianceStamped::Response::SharedPtr res);
 
-  // Receives one particle from the pose initialization search as it is produced, and does the
-  // publishing the search used to do inline.
-  void on_pose_initialization_progress(const PoseInitializationModule::Progress & progress);
+  // Publishes one step of the pose initialization search: the debug markers, batched as before,
+  // and the scan aligned by that particle.
+  void publish_pose_initialization_progress(const PoseInitializationModule::Progress & progress);
 
   void transform_sensor_measurement(
     const std::string & source_frame, const std::string & target_frame,

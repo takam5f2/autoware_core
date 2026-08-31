@@ -204,16 +204,11 @@ NDTScanMatcher::NDTScanMatcher(const rclcpp::NodeOptions & options)
       return this->get_differential_point_cloud_map(request);
     });
 
-  // The search publishes its progress as it runs, so the module hands each particle back here
-  // rather than collecting them: this callback owns the marker batching and the two publishers.
-  pose_initialization_module_ = std::make_unique<PoseInitializationModule>(
-    PoseInitializationModule::Params{
+  pose_initialization_module_ =
+    std::make_unique<PoseInitializationModule>(PoseInitializationModule::Params{
       param_.initial_pose_estimation.particles_num, param_.initial_pose_estimation.n_startup_trials,
       param_.frame.map_frame,
-      param_.score_estimation.converged_param_nearest_voxel_transformation_likelihood},
-    [this](const PoseInitializationModule::Progress & progress) {
-      on_pose_initialization_progress(progress);
-    });
+      param_.score_estimation.converged_param_nearest_voxel_transformation_likelihood});
 
   diagnostics_scan_points_ = std::make_unique<DiagnosticsInterface>(this, "scan_matching_status");
   diagnostics_initial_pose_ =
@@ -249,7 +244,7 @@ NDTScanMatcher::get_differential_point_cloud_map(
   return result.get();
 }
 
-void NDTScanMatcher::on_pose_initialization_progress(
+void NDTScanMatcher::publish_pose_initialization_progress(
   const PoseInitializationModule::Progress & progress)
 {
   // publish the estimated poses in 20 times to see the progress and to avoid dropping data
@@ -1149,10 +1144,16 @@ void NDTScanMatcher::service_ndt_align_main(
   publish_loaded_map_if_present(result);
 
   PoseInitializationModule::Result align_result;
-  // The lock is held across the search, as before: it aligns against the installed NDT.
+  // The lock is held across the search, as before: it aligns against the installed NDT. Stepping
+  // it here rather than handing the module a callback is what keeps the publishing below in sight
+  // of the loop it belongs to.
   ndt_ptr_.with([&](auto & ndt_ptr) {
-    align_result = pose_initialization_module_->estimate(
+    auto search = pose_initialization_module_->begin(
       *ndt_ptr, sensor_points_in_baselink_frame_, initial_pose_msg_in_map_frame);
+    while (const auto progress = search.next()) {
+      publish_pose_initialization_progress(*progress);
+    }
+    align_result = search.finish();
   });
   replay_logs(align_result.diagnostics.logs);
   apply_diagnostics_update(*diagnostics_ndt_align_, align_result.diagnostics);
