@@ -1974,19 +1974,21 @@ TEST(NdtScanMatcherCharacteristics, FailedLoadIsRetriedOnTheFollowingTick)
     << "keys: " << ::testing::PrintToString(retry->keys_in_order());
 }
 
-/// SUSPICIOUS — an align request far outside the loaded map removes the map, and the tick after it
-/// raises a "not keeping up" ERROR for a vehicle that has not moved.
+/// SUSPICIOUS — an align request far outside the loaded map leaves the NDT with no map at all, and
+/// the timer does not bring it back while the vehicle stands still.
 ///
-/// The service calls `update_map` directly, so the request position drives a differential query:
-/// the loaded cell's anchor is outside a circle centred 283 m away and comes back in
-/// `ids_to_remove`; the update succeeds, the map is empty, the align fails on it, and the request
-/// position is recorded as the last load. On the next tick the EKF position is 283 m from that --
-/// the ERROR, `need_rebuild`, and a rebuild that puts the cell back. Two effects of one failed
-/// request: the map is gone until re-activation plus a tick (production calls the service while
-/// deactivated, and the timer waits for activation), and monitoring sees a false alarm. The
-/// natural fix -- load into a scratch NDT and swap only on success -- changes both, so they are
-/// pinned as they are.
-TEST(NdtScanMatcherCharacteristics, FarAlignRequestRemovesTheLoadedCellUntilTheTimerReloadsIt)
+/// The service calls `update_map` directly. `need_rebuild` is derived from the request position,
+/// which is 283 m from the loaded cell, so the request takes the rebuild path: `ndt_ptr_` is reset
+/// before the load, the loader has nothing at that position, and the rebuild fails. The failure
+/// leaves `last_update_position_` where the *successful* load put it, so every following tick
+/// measures 0 m -- from a map that is no longer there -- and skips. The node runs on with an empty
+/// NDT until the vehicle moves `update_distance`.
+///
+/// Neither half of the change causes this alone, which is why it survived both:
+/// with a latched `need_rebuild` the request takes the differential path and records its own
+/// position; with the position recorded on failure the next tick measures 283 m and rebuilds.
+/// Only the two together strand the map.
+TEST(NdtScanMatcherCharacteristics, FarAlignRequestStrandsTheNdtWithoutAMap)
 {
   // Arrange
   auto harness = make_ready_harness(fast_align_overrides());
@@ -2003,22 +2005,27 @@ TEST(NdtScanMatcherCharacteristics, FarAlignRequestRemovesTheLoadedCellUntilTheT
 
   const auto diag = harness->wait_for_diag_since_mark(ndt_align_status);
   ASSERT_TRUE(diag.has_value());
-  EXPECT_EQ(diag->value("is_need_rebuild"), "False");
-  EXPECT_EQ(diag->value("maps_to_remove_size"), "1");
-  EXPECT_EQ(diag->value("is_updated_map"), "True");
-  EXPECT_EQ(diag->value("maps_size_after"), "0");
+  EXPECT_EQ(diag->value("is_need_rebuild"), "True");
+  // The reset NDT declares no cached ids, and the loader has none to offer at this position, so
+  // the rebuild has nothing to install and never reaches `maps_size_after`.
+  EXPECT_EQ(diag->value("maps_to_remove_size"), "0");
+  EXPECT_EQ(diag->value("is_updated_map"), "False");
+  EXPECT_FALSE(diag->has_key("maps_size_after"))
+    << "keys: " << ::testing::PrintToString(diag->keys_in_order());
   EXPECT_EQ(diag->value("is_set_map_points"), "False");
-  EXPECT_EQ(diag->level(), level_warn) << "message was: " << diag->message();
+  EXPECT_EQ(diag->level(), level_error) << "message was: " << diag->message();
 
-  const auto reload = harness->wait_for_diag(
+  // The tick after it measures 0 m -- against the position of the load that succeeded, not the one
+  // that just failed -- and skips, so nothing reloads the map.
+  const auto idle_tick = harness->wait_for_diag(
     map_update_status,
     [](const NdtHarness::Record & record) {
-      return record.level() == level_error && record.value("is_updated_map") == "True";
+      return record.value_as_double("distance_last_update_position_to_current_position") == 0.0;
     },
     5s);
-  ASSERT_TRUE(reload.has_value());
-  EXPECT_EQ(reload->value("is_need_rebuild"), "True");
-  EXPECT_EQ(reload->value("maps_size_after"), "1");
+  ASSERT_TRUE(idle_tick.has_value());
+  EXPECT_FALSE(idle_tick->has_key("is_need_rebuild"))
+    << "keys: " << ::testing::PrintToString(idle_tick->keys_in_order());
 }
 
 /// Without a map loader the timer reports a failed attempt, and keeps attempting.

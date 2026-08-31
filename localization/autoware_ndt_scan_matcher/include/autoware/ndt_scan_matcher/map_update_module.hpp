@@ -122,19 +122,9 @@ private:
   // Distance from the last successful map-update position, or std::nullopt if there is none yet.
   std::optional<double> distance_from_last_update(const geometry_msgs::msg::Point & position);
 
-  // The map builder's state: the NDT the incremental path loads into, and whether the next update
-  // has to rebuild from scratch instead. The flag is latched rather than derived from the current
-  // position, because `update_map()` -- the align path -- runs without the distance check that
-  // would set it, and has to inherit the decision the timer path last made.
-  struct BuilderState
-  {
-    bool need_rebuild{false};
-    NdtPtrType secondary_ndt_ptr;
-  };
-
   // Returns true if the NDT map was actually updated.
   bool update_map_internal(
-    BuilderState & builder_state, const geometry_msgs::msg::Point & position,
+    NdtPtrType & secondary_ndt_ptr, const geometry_msgs::msg::Point & position,
     DiagnosticsReport & diagnostics);
 
   // Do not call this function while holding the lock for ndt_ptr_.
@@ -149,17 +139,17 @@ private:
   PcdLoaderFunction pcd_loader_;
 
   // To prevent deadlocks, acquire locks in the following order:
-  // 1. builder_state_ -> ndt_ptr_
-  // 2. builder_state_ -> last_update_position_
+  // 1. secondary_ndt_ptr_ -> ndt_ptr_
+  // 2. secondary_ndt_ptr_ -> last_update_position_
   Guarded<NdtPtrType> & ndt_ptr_;
-  Guarded<BuilderState> builder_state_;
+  Guarded<NdtPtrType> secondary_ndt_ptr_;
   Guarded<std::optional<geometry_msgs::msg::Point>> last_update_position_{std::nullopt};
 
   HyperParameters::DynamicMapLoading param_;
 
   // Loaded point cloud map cells for the debug publish, keyed by cell id so that cells dropped by
   // a differential update can be erased. Only populated when param_.publish_loaded_map is enabled.
-  // Accessed only while builder_state_'s lock is held.
+  // Accessed only while secondary_ndt_ptr_'s lock is held.
   std::map<std::string, sensor_msgs::msg::PointCloud2> loaded_pcd_map_;
 };
 
