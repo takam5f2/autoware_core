@@ -22,8 +22,8 @@
 #include "hyper_parameters.hpp"
 #include "map_update_module.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
+#include "pose_interpolation_buffer.hpp"
 
-#include <autoware/localization_util/smart_pose_buffer.hpp>
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
 #include <autoware_utils_logging/logger_level_configure.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -162,6 +162,9 @@ private:
     const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request);
 
   // Forwards a diagnostics update produced by MapUpdateModule to the given DiagnosticsInterface.
+  // Emits the log lines a core module recorded, one `case` per site.
+  void replay_logs(const std::vector<LogRequest> & logs);
+
   static void apply_diagnostics_update(
     DiagnosticsInterface & diagnostics, const DiagnosticsReport & report);
 
@@ -222,12 +225,12 @@ private:
 
   pcl::shared_ptr<pcl::PointCloud<PointSource>> sensor_points_in_baselink_frame_;
 
-  std::unique_ptr<autoware::localization_util::SmartPoseBuffer> initial_pose_buffer_;
+  std::unique_ptr<PoseInterpolationBuffer> initial_pose_buffer_;
 
   // Keep latest position for dynamic map loading
   Guarded<std::optional<geometry_msgs::msg::Point>> latest_ekf_position_{std::nullopt};
 
-  std::unique_ptr<autoware::localization_util::SmartPoseBuffer> regularization_pose_buffer_;
+  std::unique_ptr<PoseInterpolationBuffer> regularization_pose_buffer_;
 
   std::atomic<bool> is_activated_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_scan_points_;

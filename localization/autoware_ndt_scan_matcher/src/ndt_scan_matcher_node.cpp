@@ -55,7 +55,6 @@ using autoware::localization_util::exchange_color_crc;
 using autoware::localization_util::matrix4f_to_pose;
 using autoware::localization_util::pose_to_matrix4f;
 
-using autoware::localization_util::SmartPoseBuffer;
 using autoware::localization_util::TreeStructuredParzenEstimator;
 using autoware_utils_diagnostics::DiagnosticsInterface;
 
@@ -121,7 +120,7 @@ NDTScanMatcher::NDTScanMatcher(const rclcpp::NodeOptions & options)
         initial_pose_sub_opt);
     const double value_as_unlimited = 1000.0;
     regularization_pose_buffer_ =
-      std::make_unique<SmartPoseBuffer>(this->get_logger(), value_as_unlimited, value_as_unlimited);
+      std::make_unique<PoseInterpolationBuffer>(value_as_unlimited, value_as_unlimited);
 
     diagnostics_regularization_pose_ =
       std::make_unique<DiagnosticsInterface>(this, "regularization_pose_subscriber_status");
@@ -189,8 +188,8 @@ NDTScanMatcher::NDTScanMatcher(const rclcpp::NodeOptions & options)
 
   ndt_ptr_.with([&](const auto & ndt_ptr) { ndt_ptr->setParams(param_.ndt); });
 
-  initial_pose_buffer_ = std::make_unique<SmartPoseBuffer>(
-    this->get_logger(), param_.validation.initial_pose_timeout_sec,
+  initial_pose_buffer_ = std::make_unique<PoseInterpolationBuffer>(
+    param_.validation.initial_pose_timeout_sec,
     param_.validation.initial_pose_distance_tolerance_m);
 
   // ROS-dependent resources for the map update module are owned by this node.
@@ -237,6 +236,24 @@ NDTScanMatcher::get_differential_point_cloud_map(
   }
 
   return result.get();
+}
+
+void NDTScanMatcher::replay_logs(const std::vector<LogRequest> & logs)
+{
+  // One `case` per site, so that each keeps the severity it had -- and, for the throttled sites
+  // added later, its own macro expansion and therefore its own throttle clock.
+  for (const auto & log : logs) {
+    switch (log.site) {
+      case LogSite::PoseBufferTooFewSamples:
+      case LogSite::PoseBufferStampMismatch:
+        RCLCPP_INFO_STREAM(this->get_logger(), log.message);
+        break;
+      case LogSite::PoseBufferTimeoutViolation:
+      case LogSite::PoseBufferDistanceViolation:
+        RCLCPP_WARN_STREAM(this->get_logger(), log.message);
+        break;
+    }
+  }
 }
 
 void NDTScanMatcher::apply_diagnostics_update(
@@ -481,8 +498,10 @@ bool NDTScanMatcher::callback_sensor_points_main(
     }
 
     // calculate initial pose
-    std::optional<SmartPoseBuffer::InterpolateResult> interpolation_result_opt =
-      initial_pose_buffer_->interpolate(sensor_ros_time);
+    std::vector<LogRequest> interpolation_logs;
+    std::optional<PoseInterpolationBuffer::InterpolateResult> interpolation_result_opt =
+      initial_pose_buffer_->interpolate(sensor_ros_time, interpolation_logs);
+    replay_logs(interpolation_logs);
 
     // check is_succeed_interpolate_initial_pose
     const bool is_succeed_interpolate_initial_pose = (interpolation_result_opt != std::nullopt);
@@ -500,7 +519,7 @@ bool NDTScanMatcher::callback_sensor_points_main(
     }
 
     initial_pose_buffer_->pop_old(sensor_ros_time);
-    const SmartPoseBuffer::InterpolateResult & interpolation_result =
+    const PoseInterpolationBuffer::InterpolateResult & interpolation_result =
       interpolation_result_opt.value();
 
     // if regularization is enabled and available, set pose to NDT for regularization
@@ -990,13 +1009,15 @@ void NDTScanMatcher::add_regularization_pose(
   const rclcpp::Time & sensor_ros_time, NormalDistributionsTransform & ndt_ref)
 {
   ndt_ref.unsetRegularizationPose();
-  std::optional<SmartPoseBuffer::InterpolateResult> interpolation_result_opt =
-    regularization_pose_buffer_->interpolate(sensor_ros_time);
+  std::vector<LogRequest> interpolation_logs;
+  std::optional<PoseInterpolationBuffer::InterpolateResult> interpolation_result_opt =
+    regularization_pose_buffer_->interpolate(sensor_ros_time, interpolation_logs);
+  replay_logs(interpolation_logs);
   if (!interpolation_result_opt) {
     return;
   }
   regularization_pose_buffer_->pop_old(sensor_ros_time);
-  const SmartPoseBuffer::InterpolateResult & interpolation_result =
+  const PoseInterpolationBuffer::InterpolateResult & interpolation_result =
     interpolation_result_opt.value();
   const Eigen::Matrix4f pose = pose_to_matrix4f(interpolation_result.interpolated_pose.pose.pose);
   ndt_ref.setRegularizationPose(pose);
