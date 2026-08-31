@@ -146,9 +146,20 @@ private:
 
   static int count_oscillation(const std::vector<geometry_msgs::msg::Pose> & result_pose_msg_array);
 
-  Eigen::Matrix2d estimate_covariance(
+  // The covariance, plus the two debug PoseArrays the estimate used to publish itself. Each is
+  // engaged only in the branch that published it, so a caller that publishes whatever is engaged
+  // reproduces what went out before.
+  struct CovarianceEstimate
+  {
+    Eigen::Matrix2d covariance{Eigen::Matrix2d::Identity()};
+    std::optional<geometry_msgs::msg::PoseArray> multi_ndt_pose;
+    std::optional<geometry_msgs::msg::PoseArray> multi_initial_pose;
+  };
+
+  [[nodiscard]] CovarianceEstimate estimate_covariance(
     const pclomp::NdtResult & ndt_result, const Eigen::Matrix4f & initial_pose_matrix,
-    const rclcpp::Time & sensor_ros_time, NormalDistributionsTransform & ndt_ref);
+    const builtin_interfaces::msg::Time & sensor_time, NormalDistributionsTransform & ndt_ref,
+    const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_in_baselink_frame);
 
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr visualize_point_score(
     const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_in_map_ptr,
