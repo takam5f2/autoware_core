@@ -142,7 +142,10 @@ bool MapUpdateModule::update_map_internal(
         "(1) the initial position matches the pcd map and (2) the map_loader is working "
         "properly.");
 
-      last_update_position_.with([&](auto & pos) { pos = position; });
+      // Do not advance last_update_position_: the rebuild failed, so no map is loaded at
+      // `position`. Recording it anyway made the measured distance 0 on every following tick,
+      // which held the next attempt back until the vehicle had moved `update_distance` -- a
+      // stationary vehicle whose first load failed never recovered.
       return false;
     }
 

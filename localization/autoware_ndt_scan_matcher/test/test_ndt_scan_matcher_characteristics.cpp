@@ -1939,13 +1939,12 @@ TEST(NdtScanMatcherCharacteristics, UpdateDistanceIsAStrictBoundary)
     past_boundary->value_as_double("distance_last_update_position_to_current_position"), 20.0);
 }
 
-/// A failed load is not retried until the vehicle has moved `update_distance`.
+/// A failed load is retried on the following tick, with the vehicle standing still.
 ///
-/// A failed rebuild records its position like a successful one (`map_update_module.cpp:176`), so
-/// `should_update_map` sees distance 0 on every following tick. `need_rebuild` stays set, so the
-/// query that finally comes is a rebuild again. Starting with the EKF pose off the map therefore
-/// costs one attempt per `update_distance` of travel, not one per second.
-TEST(NdtScanMatcherCharacteristics, FailedLoadIsNotRetriedUntilTheVehicleMovesUpdateDistance)
+/// A failed rebuild leaves `last_update_position_` unset, so there is no distance to measure and
+/// nothing holds the next attempt back. Starting with the EKF pose off the map therefore costs one
+/// attempt per tick until a load succeeds, rather than one per `update_distance` of travel.
+TEST(NdtScanMatcherCharacteristics, FailedLoadIsRetriedOnTheFollowingTick)
 {
   // Arrange
   auto harness = make_ready_harness();
@@ -1957,19 +1956,8 @@ TEST(NdtScanMatcherCharacteristics, FailedLoadIsNotRetriedUntilTheVehicleMovesUp
   ASSERT_TRUE(harness->wait_until([&] { return loader_query_count(*harness) >= 1U; }, 5s));
 
   // Assert
-  // The next tick measures 0 m from the recorded position and does not query ...
-  const auto idle_tick = harness->wait_for_diag(
-    map_update_status,
-    [](const NdtHarness::Record & record) {
-      return record.value_as_double("distance_last_update_position_to_current_position") == 0.0;
-    },
-    5s);
-  ASSERT_TRUE(idle_tick.has_value());
-  EXPECT_FALSE(idle_tick->has_key("is_need_rebuild"))
-    << "keys: " << ::testing::PrintToString(idle_tick->keys_in_order());
-  // ... and moving past `update_distance` brings one, still a rebuild, still failing.
-  ASSERT_TRUE(harness->publish_initial_pose_and_confirm(
-    make_pose_at(harness->now(), -map_center_x + 21.0, -map_center_y)));
+  // No further pose is published, so the second query can only come from a retry at the same
+  // position.
   ASSERT_TRUE(harness->wait_until([&] { return loader_query_count(*harness) >= 2U; }, 5s));
   std::optional<NdtHarness::Record> retry;
   for (const auto & record : harness->diag().records(map_update_status)) {
@@ -1980,6 +1968,10 @@ TEST(NdtScanMatcherCharacteristics, FailedLoadIsNotRetriedUntilTheVehicleMovesUp
   ASSERT_TRUE(retry.has_value());
   EXPECT_EQ(retry->value("is_need_rebuild"), "True");
   EXPECT_EQ(retry->value("is_updated_map"), "False");
+  // The absent key is what drives the retry: with no position on record there is no distance to
+  // compare against `update_distance`.
+  EXPECT_FALSE(retry->has_key("distance_last_update_position_to_current_position"))
+    << "keys: " << ::testing::PrintToString(retry->keys_in_order());
 }
 
 /// SUSPICIOUS — an align request far outside the loaded map removes the map, and the tick after it
@@ -2029,16 +2021,16 @@ TEST(NdtScanMatcherCharacteristics, FarAlignRequestRemovesTheLoadedCellUntilTheT
   EXPECT_EQ(reload->value("maps_size_after"), "1");
 }
 
-/// Without a map loader the timer reports one failed attempt and does not spin retrying.
+/// Without a map loader the timer reports a failed attempt, and keeps attempting.
 ///
 /// `update_ndt` gives the service a second to appear, then reports `is_succeed_call_pcd_loader:
-/// False` with a WARN and returns; the rebuild that called it turns that into the ERROR, records
-/// the position, and -- as after any failed load -- does not try again until the vehicle moves
-/// `update_distance`. The timer callback blocks for that second on each attempt. The message no
-/// longer says which failure fired: autowarefoundation/autoware_core#1322 collapsed the "service
-/// never appeared" and `!rclcpp::ok()` WARNs into one, so the text now carries no more than
+/// False` with a WARN and returns; the rebuild that called it turns that into the ERROR and leaves
+/// no position on record, so the next tick tries again. The timer callback blocks for that second
+/// on each attempt, which is what paces the retries. The message no longer says which failure
+/// fired: autowarefoundation/autoware_core#1322 collapsed the "service never appeared" and
+/// `!rclcpp::ok()` WARNs into one, so the text now carries no more than
 /// `is_succeed_call_pcd_loader: False` already does. It is still asserted, to pin the collapse.
-TEST(NdtScanMatcherCharacteristics, WithoutAMapLoaderTheTimerWarnsOnceAndDoesNotLoad)
+TEST(NdtScanMatcherCharacteristics, WithoutAMapLoaderTheTimerKeepsAttempting)
 {
   // Arrange
   auto harness =
@@ -2062,15 +2054,17 @@ TEST(NdtScanMatcherCharacteristics, WithoutAMapLoaderTheTimerWarnsOnceAndDoesNot
   EXPECT_EQ(attempt->level(), level_error) << "message was: " << attempt->message();
   EXPECT_TRUE(contains(attempt->message(), "pcd_loader service is not working"))
     << "message was: " << attempt->message();
-  const auto idle_tick = harness->wait_for_diag(
+  // A second attempt follows without the vehicle moving, and reports the same failure.
+  const auto next_attempt = harness->wait_for_diag(
     map_update_status,
-    [](const NdtHarness::Record & record) {
-      return record.value_as_double("distance_last_update_position_to_current_position") == 0.0;
+    [&](const NdtHarness::Record & record) {
+      return record.has_key("is_need_rebuild") && record.stamp() != attempt->stamp();
     },
     5s);
-  ASSERT_TRUE(idle_tick.has_value());
-  EXPECT_FALSE(idle_tick->has_key("is_need_rebuild"))
-    << "keys: " << ::testing::PrintToString(idle_tick->keys_in_order());
+  ASSERT_TRUE(next_attempt.has_value());
+  EXPECT_EQ(next_attempt->value("is_succeed_call_pcd_loader"), "False");
+  EXPECT_FALSE(next_attempt->has_key("distance_last_update_position_to_current_position"))
+    << "keys: " << ::testing::PrintToString(next_attempt->keys_in_order());
 }
 
 // ---------------------------------------------------------------------------------------------
