@@ -100,11 +100,11 @@ private:
 
   void callback_sensor_points(
     sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame);
-  // Records what it would have logged into `scan_logs` rather than logging, so that the caller
-  // replays from one place regardless of which gate returned.
+  // Records into `report` rather than writing to a DiagnosticsInterface or a logger, so that the
+  // caller forwards and replays from one place regardless of which gate returned.
   bool callback_sensor_points_main(
     sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame,
-    std::vector<LogRequest> & scan_logs);
+    DiagnosticsReport & report);
 
   void service_trigger_node(
     const std_srvs::srv::SetBool::Request::SharedPtr req,
