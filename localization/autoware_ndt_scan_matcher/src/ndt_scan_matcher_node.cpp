@@ -280,6 +280,15 @@ void NdtScanMatcherNode::replay_logs(const std::vector<LogRequest> & logs)
       case LogSite::AlignUnstableScore:
         RCLCPP_WARN_STREAM(this->get_logger(), log.message);
         break;
+      case LogSite::ScanTransformFailed:
+        RCLCPP_ERROR_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1000, log.message);
+        break;
+      case LogSite::ScanOutOfMapRange:
+        RCLCPP_WARN_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1000, log.message);
+        break;
+      case LogSite::ScanScoreBelowThreshold:
+        RCLCPP_WARN_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1000, log.message);
+        break;
       case LogSite::AlignNoInputTarget:
         RCLCPP_WARN_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1000, log.message);
         break;
@@ -418,9 +427,12 @@ void NdtScanMatcherNode::callback_sensor_points(
   // clear diagnostics
   diagnostics_scan_points_->clear();
 
-  // scan matching
+  // scan matching. The log records come back rather than being emitted as they are produced, so
+  // that they are replayed from one place no matter which of the eight gates returned.
+  std::vector<LogRequest> scan_logs;
   const bool is_succeed_scan_matching =
-    callback_sensor_points_main(sensor_points_msg_in_sensor_frame);
+    callback_sensor_points_main(sensor_points_msg_in_sensor_frame, scan_logs);
+  replay_logs(scan_logs);
 
   // check skipping_publish_num
   static int64_t skipping_publish_num = 0;
@@ -438,7 +450,8 @@ void NdtScanMatcherNode::callback_sensor_points(
 }
 
 bool NdtScanMatcherNode::callback_sensor_points_main(
-  sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame)
+  sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame,
+  std::vector<LogRequest> & scan_logs)
 {
   const auto exe_start_time = std::chrono::system_clock::now();
 
@@ -498,7 +511,7 @@ bool NdtScanMatcherNode::callback_sensor_points_main(
             << param_.frame.base_frame;
     diagnostics_scan_points_->update_level_and_message(
       diagnostic_msgs::msg::DiagnosticStatus::ERROR, message.str());
-    RCLCPP_ERROR_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1000, message.str());
+    scan_logs.push_back({LogSite::ScanTransformFailed, message.str()});
     diagnostics_scan_points_->add_key_value("is_succeed_transform_sensor_points", false);
     return false;
   }
@@ -578,8 +591,7 @@ bool NdtScanMatcherNode::callback_sensor_points_main(
       msg << "Lidar has gone out of the map range";
       diagnostics_scan_points_->update_level_and_message(
         diagnostic_msgs::msg::DiagnosticStatus::WARN, msg.str());
-
-      RCLCPP_WARN_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1000, msg.str());
+      scan_logs.push_back({LogSite::ScanOutOfMapRange, msg.str()});
     }
 
     // check is_set_map_points
@@ -698,7 +710,7 @@ bool NdtScanMatcherNode::callback_sensor_points_main(
               << ", Threshold: " << score_threshold;
       diagnostics_scan_points_->update_level_and_message(
         diagnostic_msgs::msg::DiagnosticStatus::WARN, message.str());
-      RCLCPP_WARN_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1000, message.str());
+      scan_logs.push_back({LogSite::ScanScoreBelowThreshold, message.str()});
     }
 
     // check is_converged

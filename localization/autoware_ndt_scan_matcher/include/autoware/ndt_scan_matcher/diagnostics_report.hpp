@@ -56,6 +56,11 @@ enum class LogSite : uint8_t {
   PoseBufferTimeoutViolation,   // WARN
   PoseBufferDistanceViolation,  // WARN
 
+  // ScanMatchingModule's hot path. All three were throttled at 1000 ms.
+  ScanTransformFailed,      // ERROR
+  ScanOutOfMapRange,        // WARN
+  ScanScoreBelowThreshold,  // WARN
+
   // PoseInitializationSearch. The two Align* warnings were throttled at 1000 ms; the other three
   // were not.
   AlignNoInputTarget,  // WARN, throttled
