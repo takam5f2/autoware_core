@@ -16,6 +16,7 @@
 #include <autoware/localization_util/tree_structured_parzen_estimator.hpp>
 #include <autoware/localization_util/util_func.hpp>
 #include <autoware/ndt_scan_matcher/pose_initialization_search.hpp>
+#include <autoware/ndt_scan_matcher/pose_interpolation_buffer.hpp>  // to_nanoseconds
 #include <autoware_utils_pcl/transforms.hpp>
 #include <tf2/LinearMath/Quaternion.hpp>
 
@@ -112,9 +113,16 @@ PoseInitializationSearch::PoseInitializationSearch(
     std::sqrt(covariance(3, 3)), std::sqrt(covariance(4, 4))};
 
   // Optimizing (x, y, z, roll, pitch, yaw) 6 dimensions.
+  //
+  // Seeded from the request's stamp, so that two requests explore differently -- a retry of a
+  // failed initialization is worth making -- while replaying one request reproduces its search
+  // exactly. A per-node counter would give the first property and not the second, and the shared
+  // `static` this replaced gave neither reliably: which inputs a search proposed depended on how
+  // many searches had run anywhere in the process before it.
   pose_sampler_ = std::make_unique<TreeStructuredParzenEstimator>(
     TreeStructuredParzenEstimator::Direction::MAXIMIZE, param_.n_startup_trials, sample_mean,
-    sample_stddev);
+    sample_stddev,
+    static_cast<std::uint64_t>(to_nanoseconds(initial_pose_in_map_frame_.header.stamp)));
 }
 
 PoseInitializationSearch::~PoseInitializationSearch() = default;

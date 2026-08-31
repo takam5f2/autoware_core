@@ -57,17 +57,24 @@ public:
   };
 
   TreeStructuredParzenEstimator() = delete;
+  // `seed` picks the random sequence this estimator draws from. Two estimators with the same seed
+  // and the same trials propose the same inputs, which is what makes a search reproducible; two
+  // with different seeds explore differently, which is what makes retrying one worthwhile.
   TreeStructuredParzenEstimator(
     const Direction direction, const int64_t n_startup_trials, std::vector<double> sample_mean,
-    std::vector<double> sample_stddev);
+    std::vector<double> sample_stddev, const std::uint64_t seed = 0);
   void add_trial(const Trial & trial);
-  [[nodiscard]] Input get_next_input() const;
+  // Draws from `engine_`, so not const: it advances the sequence.
+  [[nodiscard]] Input get_next_input();
 
 private:
   static constexpr double max_good_rate = 0.10;
   static constexpr int64_t n_ei_candidates = 100;
 
-  static std::mt19937_64 engine;
+  // One engine per estimator. It used to be a `static` shared by every estimator in the process,
+  // which coupled unrelated searches -- two nodes in one component container drew from the same
+  // sequence, and which inputs a search proposed depended on how many had run before it anywhere.
+  std::mt19937_64 engine_;
 
   [[nodiscard]] double compute_log_likelihood_ratio(const Input & input) const;
   [[nodiscard]] static double log_gaussian_pdf(
