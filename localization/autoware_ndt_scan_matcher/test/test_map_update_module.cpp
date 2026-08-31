@@ -108,7 +108,7 @@ protected:
   }
 
   Guarded<MapUpdateModule::NdtPtrType> ndt_ptr_{std::make_shared<MapUpdateModule::NdtType>()};
-  HyperParameters::DynamicMapLoading param_{};
+  MapUpdateModule::Params param_{};
 };
 
 // The first update has no previous position, so it rebuilds the NDT from scratch and loads a map.

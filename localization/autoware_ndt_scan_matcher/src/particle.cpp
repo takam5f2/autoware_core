@@ -34,7 +34,10 @@ void push_debug_markers(
   marker.scale.y = 0.1;
   marker.scale.z = 0.1;
   marker.id = static_cast<int32_t>(i);
-  marker.lifetime = rclcpp::Duration::from_seconds(10.0);  // 10.0 is the lifetime in seconds.
+  // Set the message field directly rather than through rclcpp::Duration, which is the only thing
+  // that would tie this file to rclcpp. The two are the same for a whole number of seconds.
+  marker.lifetime.sec = 10;
+  marker.lifetime.nanosec = 0;
 
   marker.ns = "initial_pose_transform_probability_color_marker";
   marker.pose = particle.initial_pose;

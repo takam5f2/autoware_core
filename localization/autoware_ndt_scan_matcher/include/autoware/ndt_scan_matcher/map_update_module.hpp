@@ -17,7 +17,6 @@
 
 #include "diagnostics_report.hpp"
 #include "guarded.hpp"
-#include "hyper_parameters.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
 
 #include <autoware_map_msgs/srv/get_differential_point_cloud_map.hpp>
@@ -55,6 +54,21 @@ public:
   using PcdLoaderFunction = std::function<GetDifferentialPointCloudMap::Response::SharedPtr(
     const GetDifferentialPointCloudMap::Request::SharedPtr &)>;
 
+  // Owned by this module rather than by HyperParameters, so that declaring it costs no dependency
+  // on rclcpp. HyperParameters embeds this type and fills it in from the node's parameters.
+  struct Params
+  {
+    // How far the vehicle has to move before the periodic update runs again [m].
+    double update_distance{};
+    // Radius of the map requested from the pcd loader [m].
+    double map_radius{};
+    // Radius of the input lidar range [m]. Once map_radius - lidar_radius is exceeded the loaded
+    // map no longer covers the sensor and has to be rebuilt.
+    double lidar_radius{};
+    // Whether to produce the merged loaded map for the debug publish.
+    bool publish_loaded_map{};
+  };
+
   // Result of a map update entry point: whether the NDT map changed, plus the diagnostics to
   // report for this call.
   struct UpdateResult
@@ -68,7 +82,7 @@ public:
 
 public:
   MapUpdateModule(
-    Guarded<NdtPtrType> & ndt_ptr, HyperParameters::DynamicMapLoading param,
+    Guarded<NdtPtrType> & ndt_ptr, Params param,
     PcdLoaderFunction pcd_loader);
 
   bool out_of_map_range(const geometry_msgs::msg::Point & position);
@@ -115,7 +129,7 @@ private:
   Guarded<BuilderState> builder_state_;
   Guarded<std::optional<geometry_msgs::msg::Point>> last_update_position_{std::nullopt};
 
-  HyperParameters::DynamicMapLoading param_;
+  Params param_;
 
   // Loaded point cloud map cells for the debug publish, keyed by cell id so that cells dropped by
   // a differential update can be erased. Only populated when param_.publish_loaded_map is enabled.
