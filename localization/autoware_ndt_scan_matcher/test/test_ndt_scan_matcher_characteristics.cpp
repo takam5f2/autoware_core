@@ -2034,9 +2034,10 @@ TEST(NdtScanMatcherCharacteristics, FarAlignRequestRemovesTheLoadedCellUntilTheT
 /// `update_ndt` gives the service a second to appear, then reports `is_succeed_call_pcd_loader:
 /// False` with a WARN and returns; the rebuild that called it turns that into the ERROR, records
 /// the position, and -- as after any failed load -- does not try again until the vehicle moves
-/// `update_distance`. The timer callback blocks for that second on each attempt. The message is
-/// asserted despite the key: `is_succeed_call_pcd_loader: False` is shared with the
-/// `!rclcpp::ok()` branch, and only the text says which one fired.
+/// `update_distance`. The timer callback blocks for that second on each attempt. The message no
+/// longer says which failure fired: autowarefoundation/autoware_core#1322 collapsed the "service
+/// never appeared" and `!rclcpp::ok()` WARNs into one, so the text now carries no more than
+/// `is_succeed_call_pcd_loader: False` already does. It is still asserted, to pin the collapse.
 TEST(NdtScanMatcherCharacteristics, WithoutAMapLoaderTheTimerWarnsOnceAndDoesNotLoad)
 {
   // Arrange
@@ -2059,7 +2060,7 @@ TEST(NdtScanMatcherCharacteristics, WithoutAMapLoaderTheTimerWarnsOnceAndDoesNot
   EXPECT_EQ(attempt->value("is_succeed_call_pcd_loader"), "False");
   EXPECT_EQ(attempt->value("is_updated_map"), "False");
   EXPECT_EQ(attempt->level(), level_error) << "message was: " << attempt->message();
-  EXPECT_TRUE(contains(attempt->message(), "Waiting for pcd loader service"))
+  EXPECT_TRUE(contains(attempt->message(), "pcd_loader service is not working"))
     << "message was: " << attempt->message();
   const auto idle_tick = harness->wait_for_diag(
     map_update_status,
