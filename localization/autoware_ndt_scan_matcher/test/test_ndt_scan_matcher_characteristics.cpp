@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /// @file
-/// @brief Characterization tests for `NDTScanMatcher`.
+/// @brief Characterization tests for `NdtScanMatcherNode`.
 ///
 /// These tests exist to make a refactor provable, not to specify desirable behavior. They pin
 /// what the node does *today*, through its ROS surface (`/diagnostics`, output topics, services),

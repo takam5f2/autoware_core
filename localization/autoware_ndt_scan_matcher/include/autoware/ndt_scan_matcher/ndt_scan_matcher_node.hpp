@@ -70,7 +70,7 @@ namespace autoware::ndt_scan_matcher
 {
 using DiagnosticsInterface = autoware_utils_diagnostics::DiagnosticsInterface;
 
-class NDTScanMatcher : public rclcpp::Node
+class NdtScanMatcherNode : public rclcpp::Node
 {
   using PointSource = pcl::PointXYZ;
   using PointTarget = pcl::PointXYZ;
@@ -78,7 +78,7 @@ class NDTScanMatcher : public rclcpp::Node
     pclomp::MultiGridNormalDistributionsTransform<PointSource, PointTarget>;
 
 public:
-  explicit NDTScanMatcher(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  explicit NdtScanMatcherNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
   // This function is only used in static tools to know when timer callbacks are triggered.
   std::chrono::nanoseconds time_until_trigger() const

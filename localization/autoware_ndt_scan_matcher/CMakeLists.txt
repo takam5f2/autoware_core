@@ -66,7 +66,7 @@ ament_auto_add_library(${PROJECT_NAME} SHARED
 target_link_libraries(${PROJECT_NAME} ${PROJECT_NAME}_core ${PCL_LIBRARIES} multigrid_ndt_omp)
 
 autoware_agnocast_wrapper_register_node(${PROJECT_NAME}
-  PLUGIN "autoware::ndt_scan_matcher::NDTScanMatcher"
+  PLUGIN "autoware::ndt_scan_matcher::NdtScanMatcherNode"
   EXECUTABLE ${PROJECT_NAME}_node
   ROS2_EXECUTOR MultiThreadedExecutor
   AGNOCAST_EXECUTOR CallbackIsolatedAgnocastExecutor

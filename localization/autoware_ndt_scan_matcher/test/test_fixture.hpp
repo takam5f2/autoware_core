@@ -62,7 +62,7 @@ protected:
       "initial_pose_estimation.particles_num", particles_num_for_test());
     node_options.parameter_overrides().emplace_back(
       "initial_pose_estimation.n_startup_trials", n_startup_trials_for_test());
-    node_ = std::make_shared<autoware::ndt_scan_matcher::NDTScanMatcher>(node_options);
+    node_ = std::make_shared<autoware::ndt_scan_matcher::NdtScanMatcherNode>(node_options);
     rcl_yaml_node_struct_fini(params_st);
 
     // prepare tf_static "base_link -> sensor_frame"
@@ -88,7 +88,7 @@ protected:
     sensor_pcd_publisher_ = std::make_shared<StubSensorPcdPublisher>();
   }
 
-  std::shared_ptr<autoware::ndt_scan_matcher::NDTScanMatcher> node_;
+  std::shared_ptr<autoware::ndt_scan_matcher::NdtScanMatcherNode> node_;
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_broadcaster_;
   std::shared_ptr<StubPcdLoader> pcd_loader_;
   std::shared_ptr<StubInitialposeClient> initialpose_client_;
