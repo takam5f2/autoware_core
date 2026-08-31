@@ -17,6 +17,7 @@
 
 #define FMT_HEADER_ONLY
 
+#include "diagnostics_report.hpp"
 #include "guarded.hpp"
 #include "hyper_parameters.hpp"
 #include "map_update_module.hpp"
@@ -162,7 +163,7 @@ private:
 
   // Forwards a diagnostics update produced by MapUpdateModule to the given DiagnosticsInterface.
   static void apply_diagnostics_update(
-    DiagnosticsInterface & diagnostics, const MapUpdateModule::DiagnosticsReport & report);
+    DiagnosticsInterface & diagnostics, const DiagnosticsReport & report);
 
   rclcpp::TimerBase::SharedPtr map_update_timer_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
