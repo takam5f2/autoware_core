@@ -26,6 +26,7 @@
 #include <autoware/ndt_scan_matcher/guarded.hpp>
 #include <autoware/ndt_scan_matcher/map_update_module.hpp>
 #include <autoware/ndt_scan_matcher/particle.hpp>
+#include <autoware/ndt_scan_matcher/pose_interpolation_buffer.hpp>
 
 namespace
 {
@@ -33,4 +34,5 @@ namespace
 [[maybe_unused]] autoware::ndt_scan_matcher::DiagnosticsReport report_instance;
 [[maybe_unused]] autoware::ndt_scan_matcher::MapUpdateModule::Params params_instance;
 [[maybe_unused]] autoware::ndt_scan_matcher::Guarded<int> guarded_instance;
+[[maybe_unused]] autoware::ndt_scan_matcher::PoseInterpolationBuffer buffer_instance{1.0, 1.0};
 }  // namespace

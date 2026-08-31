@@ -40,6 +40,30 @@ struct DiagnosticKeyValue
   std::variant<bool, int64_t, double, std::string> value;
 };
 
+// Identifies the log call site a core module would have logged from. The ROS node switches on it
+// and logs from a `case` of its own, which is what keeps each site's severity, and the throttle
+// state of the throttled ones, exactly where it was: RCLCPP_*_THROTTLE holds its state per macro
+// expansion, so replaying several sites through one shared macro would let an unrelated failure
+// consume another's throttle window.
+//
+// Severity belongs to the site, not to the record -- carrying it in both would give two answers to
+// one question. Add a value here only together with the `case` that logs it.
+enum class LogSite : uint8_t {
+  // autoware::localization_util::SmartPoseBuffer's four, in PoseInterpolationBuffer. None of these
+  // were throttled.
+  PoseBufferTooFewSamples,      // INFO
+  PoseBufferStampMismatch,      // INFO
+  PoseBufferTimeoutViolation,   // WARN
+  PoseBufferDistanceViolation,  // WARN
+};
+
+// One log line a core module would have emitted. Modules record; the node logs.
+struct LogRequest
+{
+  LogSite site;
+  std::string message;
+};
+
 // Diagnostics accumulated while a module runs: key/values plus an overall status (level +
 // message). Returned to the ROS node, which forwards it to a DiagnosticsInterface. Plain data,
 // kept ROS-free on purpose.
@@ -51,6 +75,8 @@ struct DiagnosticsReport
   DiagnosticLevel level{DiagnosticLevel::OK};
   std::string message;
   std::vector<DiagnosticKeyValue> key_values;
+  // Independent of the three above: these go to the logger, not into the DiagnosticStatus.
+  std::vector<LogRequest> logs;
 
   void add_key_value(DiagnosticKeyValue key_value) { key_values.push_back(std::move(key_value)); }
 
