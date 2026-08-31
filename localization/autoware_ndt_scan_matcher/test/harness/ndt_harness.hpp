@@ -21,7 +21,7 @@
 #include "topic_capture.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
-#include <autoware/ndt_scan_matcher/ndt_scan_matcher_core.hpp>
+#include <autoware/ndt_scan_matcher/ndt_scan_matcher_node.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <tf2_ros/static_transform_broadcaster.hpp>
 
