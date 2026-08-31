@@ -33,7 +33,7 @@
 
 namespace autoware::localization_util
 {
-// Which optimizer drives the search is an implementation detail; naming it here would put
+// Which sampler drives the search is an implementation detail; naming it here would put
 // localization_util on the include path of everything that includes this header.
 class TreeStructuredParzenEstimator;
 }  // namespace autoware::localization_util
@@ -122,7 +122,7 @@ public:
   PoseInitializationSearch & operator=(const PoseInitializationSearch &) = delete;
   PoseInitializationSearch(PoseInitializationSearch &&) = delete;
   PoseInitializationSearch & operator=(PoseInitializationSearch &&) = delete;
-  // Out of line: the optimizer is only complete in the .cpp.
+  // Out of line: the sampler is only complete in the .cpp.
   ~PoseInitializationSearch();
 
   // Aligns from the next sampled pose. Empty once every particle has been tried.
@@ -139,10 +139,12 @@ private:
   PoseWithCovarianceStamped initial_pose_in_map_frame_;
 
   DiagnosticsReport diagnostics_;
-  // Null when a precondition failed, which is also what stops `next()` before it starts.
-  std::unique_ptr<autoware::localization_util::TreeStructuredParzenEstimator> tpe_;
+  // Proposes the next initial pose to try and learns from each result. Null when a precondition
+  // failed, which is also what stops `next()` before it starts.
+  std::unique_ptr<autoware::localization_util::TreeStructuredParzenEstimator> pose_sampler_;
   std::vector<Particle> particles_;
-  int64_t index_{0};
+  // Which particle comes next; also what tells `next()` when every one has been tried.
+  int64_t particle_index_{0};
   // Reused across steps, as the single-call version reused it across iterations.
   CloudPtr output_cloud_;
 };

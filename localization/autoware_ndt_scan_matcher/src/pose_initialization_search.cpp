@@ -112,7 +112,7 @@ PoseInitializationSearch::PoseInitializationSearch(
     std::sqrt(covariance(3, 3)), std::sqrt(covariance(4, 4))};
 
   // Optimizing (x, y, z, roll, pitch, yaw) 6 dimensions.
-  tpe_ = std::make_unique<TreeStructuredParzenEstimator>(
+  pose_sampler_ = std::make_unique<TreeStructuredParzenEstimator>(
     TreeStructuredParzenEstimator::Direction::MAXIMIZE, param_.n_startup_trials, sample_mean,
     sample_stddev);
 }
@@ -121,11 +121,11 @@ PoseInitializationSearch::~PoseInitializationSearch() = default;
 
 std::optional<PoseInitializationSearch::Progress> PoseInitializationSearch::next()
 {
-  if (!tpe_ || index_ >= param_.particles_num) {
+  if (!pose_sampler_ || particle_index_ >= param_.particles_num) {
     return std::nullopt;
   }
 
-  const TreeStructuredParzenEstimator::Input input = tpe_->get_next_input();
+  const TreeStructuredParzenEstimator::Input input = pose_sampler_->get_next_input();
 
   geometry_msgs::msg::Pose initial_pose;
   initial_pose.position.x = input[0];
@@ -158,18 +158,19 @@ std::optional<PoseInitializationSearch::Progress> PoseInitializationSearch::next
   trial[3] = rpy.x;
   trial[4] = rpy.y;
   trial[5] = rpy.z;
-  tpe_->add_trial(TreeStructuredParzenEstimator::Trial{trial, ndt_result.transform_probability});
+  pose_sampler_->add_trial(
+    TreeStructuredParzenEstimator::Trial{trial, ndt_result.transform_probability});
 
   auto sensor_points_in_map_ptr = pcl::make_shared<pcl::PointCloud<PointSource>>();
   autoware_utils_pcl::transform_pointcloud(
     *sensor_points_in_baselink_frame_, *sensor_points_in_map_ptr, ndt_result.pose);
 
-  Progress progress{index_, particle, sensor_msgs::msg::PointCloud2()};
+  Progress progress{particle_index_, particle, sensor_msgs::msg::PointCloud2()};
   pcl::toROSMsg(*sensor_points_in_map_ptr, progress.sensor_points_in_map);
   progress.sensor_points_in_map.header.stamp = initial_pose_in_map_frame_.header.stamp;
   progress.sensor_points_in_map.header.frame_id = param_.map_frame;
 
-  index_++;
+  particle_index_++;
   return progress;
 }
 
