@@ -22,6 +22,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <algorithm>
+#include <initializer_list>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -31,6 +32,22 @@ namespace autoware::ndt_scan_matcher
 
 // ConvergedParamType and CovarianceEstimationType are declared by ScanMatchingModule, which owns
 // the parameters that use them and cannot depend on rclcpp.
+// Rejects a parameter whose integer names none of an enum's values. `static_cast` accepts any
+// integer, so without this a mistyped config reaches the code that uses it: once per scan for
+// `converged_param_type`, which aligned first and only then found it could not judge the result,
+// and silently for the covariance type, which fell through to a fixed value with nothing said.
+inline void require_enum_value(
+  const std::string & name, const int64_t value, const std::initializer_list<int64_t> valid,
+  const std::string & expected)
+{
+  if (std::find(valid.begin(), valid.end(), value) != valid.end()) {
+    return;
+  }
+  std::stringstream message;
+  message << "Invalid " << name << ": " << value << ". Expected " << expected << ".";
+  throw std::runtime_error(message.str());
+}
+
 struct HyperParameters
 {
   struct Frame
@@ -133,6 +150,9 @@ public:
 
     const int64_t converged_param_type_tmp =
       node->declare_parameter<int64_t>("score_estimation.converged_param_type");
+    require_enum_value(
+      "score_estimation.converged_param_type", converged_param_type_tmp, {0, 1},
+      "0 (transform probability) or 1 (nearest voxel transformation likelihood)");
     score_estimation.converged_param_type =
       static_cast<ConvergedParamType>(converged_param_type_tmp);
     score_estimation.converged_param_transform_probability =
@@ -152,6 +172,10 @@ public:
     }
     const int64_t covariance_estimation_type_tmp = node->declare_parameter<int64_t>(
       "covariance.covariance_estimation.covariance_estimation_type");
+    require_enum_value(
+      "covariance.covariance_estimation.covariance_estimation_type", covariance_estimation_type_tmp,
+      {0, 1, 2, 3},
+      "0 (fixed value), 1 (Laplace approximation), 2 (multi NDT) or 3 (multi NDT score)");
     covariance.covariance_estimation.covariance_estimation_type =
       static_cast<CovarianceEstimationType>(covariance_estimation_type_tmp);
     covariance.covariance_estimation.initial_pose_offset_model_x =
