@@ -24,6 +24,7 @@
 #include "ndt_omp/multigrid_ndt_omp.h"
 #include "pose_initialization_search.hpp"
 #include "pose_interpolation_buffer.hpp"
+#include "scan_matching_module.hpp"
 
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
 #include <autoware_utils_logging/logger_level_configure.hpp>
@@ -92,19 +93,15 @@ private:
 
   void callback_initial_pose(
     geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr initial_pose_msg_ptr);
-  void callback_initial_pose_main(
-    const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr initial_pose_msg_ptr);
 
   void callback_regularization_pose(
     geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr pose_conv_msg_ptr);
 
   void callback_sensor_points(
     sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame);
-  // Records into `report` rather than writing to a DiagnosticsInterface or a logger, so that the
-  // caller forwards and replays from one place regardless of which gate returned.
-  bool callback_sensor_points_main(
-    sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame,
-    DiagnosticsReport & report);
+  // The TF the scan match needs, looked up here because the module holds no TF buffer.
+  [[nodiscard]] ScanMatchingModule::TransformLookup lookup_base_from_sensor(
+    const std::string & sensor_frame);
 
   void service_trigger_node(
     const std_srvs::srv::SetBool::Request::SharedPtr req,
@@ -123,132 +120,22 @@ private:
   // and the scan aligned by that particle.
   void publish_pose_initialization_progress(const PoseInitializationSearch::Progress & progress);
 
-  void transform_sensor_measurement(
-    const std::string & source_frame, const std::string & target_frame,
-    const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_input_ptr,
-    pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_output_ptr);
+  void publish_scan_matching_output(const ScanMatchingModule::ScanMatchingOutput & output);
 
-  // Everything one scan match produces for the outside world, assembled while the NDT lock is
-  // held and published once it is released. Message types and PODs only, so that this struct can
-  // move into the core module unchanged.
-  //
-  // What is conditional is an `optional`, never a flag: `publish_scan_matching_output()` is
-  // allowed `if (opt)` and nothing else. A `bool` at the publish site is how the asymmetry
-  // `NonConvergedScanSuppressesPoseButStillBroadcastsTf` pins -- tf unconditional, pose only when
-  // converged -- gets broken.
-  struct ScanMatchingOutput
-  {
-    builtin_interfaces::msg::Time stamp;
-
-    // Went out ahead of everything below, from inside the covariance estimate.
-    std::optional<geometry_msgs::msg::PoseArray> multi_ndt_pose;
-    std::optional<geometry_msgs::msg::PoseArray> multi_initial_pose;
-
-    geometry_msgs::msg::PoseWithCovarianceStamped initial_pose_with_covariance;
-    float exe_time_ms{};
-    float transform_probability{};
-    float nearest_voxel_transformation_likelihood{};
-    int32_t iteration_num{};
-
-    geometry_msgs::msg::TransformStamped tf;  // unconditional
-
-    // Engaged together, only when the match converged.
-    std::optional<geometry_msgs::msg::PoseStamped> ndt_pose;
-    std::optional<geometry_msgs::msg::PoseWithCovarianceStamped> ndt_pose_with_covariance;
-
-    visualization_msgs::msg::MarkerArray ndt_marker;
-
-    geometry_msgs::msg::PoseStamped initial_to_result_relative_pose;
-    float initial_to_result_distance{};
-    float initial_to_result_distance_old{};
-    float initial_to_result_distance_new{};
-
-    sensor_msgs::msg::PointCloud2 points_aligned;
-    // Only when someone subscribes: the per-point score colouring is expensive.
-    std::optional<sensor_msgs::msg::PointCloud2> voxel_score_points;
-
-    // The three go together or not at all, following no_ground_points.enable.
-    struct NoGroundScore
-    {
-      sensor_msgs::msg::PointCloud2 points;
-      float transform_probability{};
-      float nearest_voxel_transformation_likelihood{};
-    };
-    std::optional<NoGroundScore> no_ground;
-  };
-
-  void publish_scan_matching_output(const ScanMatchingOutput & output);
-
-  [[nodiscard]] geometry_msgs::msg::TransformStamped make_tf(
-    const builtin_interfaces::msg::Time & sensor_time,
-    const geometry_msgs::msg::Pose & result_pose_msg) const;
-  [[nodiscard]] geometry_msgs::msg::PoseStamped make_pose(
-    const builtin_interfaces::msg::Time & sensor_time,
-    const geometry_msgs::msg::Pose & result_pose_msg) const;
-  [[nodiscard]] geometry_msgs::msg::PoseWithCovarianceStamped make_pose_with_covariance(
-    const builtin_interfaces::msg::Time & sensor_time,
-    const geometry_msgs::msg::Pose & result_pose_msg,
-    const std::array<double, 36> & ndt_covariance) const;
-  // Templated on the point type because the voxel score cloud is PointXYZRGB while the rest are
-  // PointXYZ.
-  template <typename PointT>
-  [[nodiscard]] sensor_msgs::msg::PointCloud2 make_point_cloud(
-    const builtin_interfaces::msg::Time & sensor_time, const std::string & frame_id,
-    const pcl::shared_ptr<pcl::PointCloud<PointT>> & points_in_map) const
-  {
-    sensor_msgs::msg::PointCloud2 points_msg_in_map;
-    pcl::toROSMsg(*points_in_map, points_msg_in_map);
-    points_msg_in_map.header.stamp = sensor_time;
-    points_msg_in_map.header.frame_id = frame_id;
-    return points_msg_in_map;
-  }
-  [[nodiscard]] visualization_msgs::msg::MarkerArray make_ndt_marker(
-    const builtin_interfaces::msg::Time & sensor_time,
-    const std::vector<geometry_msgs::msg::Pose> & pose_array, int marker_slot_num) const;
-  void fill_initial_to_result(
-    ScanMatchingOutput & output, const geometry_msgs::msg::Pose & result_pose_msg,
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_cov_msg,
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_old_msg,
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_new_msg) const;
-  void publish_loaded_map_if_present(
-    const MapUpdateModule::UpdateResult & result,
-    const std::optional<rclcpp::Time> & stamp = std::nullopt) const;
-
-  static int count_oscillation(const std::vector<geometry_msgs::msg::Pose> & result_pose_msg_array);
-
-  // The covariance, plus the two debug PoseArrays the estimate used to publish itself. Each is
-  // engaged only in the branch that published it, so a caller that publishes whatever is engaged
-  // reproduces what went out before.
-  struct CovarianceEstimate
-  {
-    Eigen::Matrix2d covariance{Eigen::Matrix2d::Identity()};
-    std::optional<geometry_msgs::msg::PoseArray> multi_ndt_pose;
-    std::optional<geometry_msgs::msg::PoseArray> multi_initial_pose;
-  };
-
-  [[nodiscard]] CovarianceEstimate estimate_covariance(
-    const pclomp::NdtResult & ndt_result, const Eigen::Matrix4f & initial_pose_matrix,
-    const builtin_interfaces::msg::Time & sensor_time, NormalDistributionsTransform & ndt_ref,
-    const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_in_baselink_frame);
-
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr visualize_point_score(
-    const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_in_map_ptr,
-    const float & lower_nvs, const float & upper_nvs, NormalDistributionsTransform & ndt_ref);
-
-  void add_regularization_pose(
-    const rclcpp::Time & sensor_ros_time, NormalDistributionsTransform & ndt_ref);
-
-  // Performs the pcd_loader service call for MapUpdateModule, returning nullptr on failure.
   MapUpdateModule::GetDifferentialPointCloudMap::Response::SharedPtr
   get_differential_point_cloud_map(
     const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request);
 
-  // Forwards a diagnostics update produced by MapUpdateModule to the given DiagnosticsInterface.
   // Emits the log lines a core module recorded, one `case` per site.
   void replay_logs(const std::vector<LogRequest> & logs);
 
+  // Forwards a diagnostics update produced by a core module to the given DiagnosticsInterface.
   static void apply_diagnostics_update(
     DiagnosticsInterface & diagnostics, const DiagnosticsReport & report);
+
+  void publish_loaded_map_if_present(
+    const MapUpdateModule::UpdateResult & result,
+    const std::optional<rclcpp::Time> & stamp = std::nullopt) const;
 
   rclcpp::TimerBase::SharedPtr map_update_timer_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
@@ -307,12 +194,7 @@ private:
 
   pcl::shared_ptr<pcl::PointCloud<PointSource>> sensor_points_in_baselink_frame_;
 
-  std::unique_ptr<PoseInterpolationBuffer> initial_pose_buffer_;
-
   // Keep latest position for dynamic map loading
-  Guarded<std::optional<geometry_msgs::msg::Point>> latest_ekf_position_{std::nullopt};
-
-  std::unique_ptr<PoseInterpolationBuffer> regularization_pose_buffer_;
 
   std::atomic<bool> is_activated_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_scan_points_;
@@ -322,6 +204,7 @@ private:
   std::unique_ptr<DiagnosticsInterface> diagnostics_ndt_align_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_trigger_node_;
   std::unique_ptr<MapUpdateModule> map_update_module_;
+  std::unique_ptr<ScanMatchingModule> scan_matching_module_;
   PoseInitializationSearch::Params pose_initialization_params_;
   // Accumulates between progress callbacks so the markers go out in batches, as before.
   visualization_msgs::msg::MarkerArray monte_carlo_marker_array_;
