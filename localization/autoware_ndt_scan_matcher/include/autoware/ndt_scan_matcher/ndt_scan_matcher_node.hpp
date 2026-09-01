@@ -116,10 +116,6 @@ private:
       req,
     autoware_internal_localization_msgs::srv::PoseWithCovarianceStamped::Response::SharedPtr res);
 
-  // Publishes one step of the pose initialization search: the debug markers, batched as before,
-  // and the scan aligned by that particle.
-  void publish_pose_initialization_progress(const PoseInitializationSearch::Progress & progress);
-
   void publish_scan_matching_output(const ScanMatchingModule::ScanMatchingOutput & output);
 
   MapUpdateModule::GetDifferentialPointCloudMap::Response::SharedPtr
@@ -209,9 +205,7 @@ private:
 
   std::unique_ptr<MapUpdateModule> map_update_module_;
   std::unique_ptr<ScanMatchingModule> scan_matching_module_;
-  PoseInitializationSearch::Params pose_initialization_params_;
-  // Accumulates between progress callbacks so the markers go out in batches, as before.
-  visualization_msgs::msg::MarkerArray monte_carlo_marker_array_;
+  PoseInitializationParams pose_initialization_params_;
   std::unique_ptr<autoware_utils_logging::LoggerLevelConfigure> logger_configure_;
 
   HyperParameters param_;

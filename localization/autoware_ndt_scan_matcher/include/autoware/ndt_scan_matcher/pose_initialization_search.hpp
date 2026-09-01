@@ -19,135 +19,77 @@
 #include "ndt_omp/multigrid_ndt_omp.h"
 #include "particle.hpp"
 
+#include <builtin_interfaces/msg/time.hpp>
+
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
-#include <vector>
-
-namespace autoware::localization_util
-{
-// Which sampler drives the search is an implementation detail; naming it here would put
-// localization_util on the include path of everything that includes this header.
-class TreeStructuredParzenEstimator;
-}  // namespace autoware::localization_util
 
 namespace autoware::ndt_scan_matcher
 {
 
+struct PoseInitializationParams
+{
+  int64_t particles_num{};
+  int64_t n_startup_trials{};
+  std::string map_frame;
+  // A best score at or below this is reported as not reliable. The service answers with it; it
+  // does not make the call fail.
+  double converged_param_nearest_voxel_transformation_likelihood{};
+};
+
+struct PoseInitializationEstimate
+{
+  geometry_msgs::msg::PoseWithCovarianceStamped pose_with_covariance;
+  double score{};
+  bool reliable{};
+};
+
+// What the search produced, returned rather than written through an out-parameter, matching
+// MapUpdateModule::UpdateResult: the caller applies the reports of the calls it makes in the order
+// it makes them, which is what keeps the joined diagnostics message in order.
+struct PoseInitializationResult
+{
+  // Empty when a precondition failed; `diagnostics` says which.
+  std::optional<PoseInitializationEstimate> estimate;
+  DiagnosticsReport diagnostics;
+
+  // What the caller publishes. Empty together with `estimate`, so the caller's publish is allowed
+  // `if (opt)` and nothing else.
+  //
+  // One cloud, not one per particle: the scan aligned by the winning pose. The search used to
+  // publish every particle's cloud as it went, which put a full lidar scan on `points_aligned`
+  // once per particle -- a hundred on the shipped configuration, against a queue of ten -- and
+  // forced the caller to step the search so it could publish between particles. The markers below
+  // carry the same exploration, arrow by arrow, at a fraction of the size.
+  std::optional<sensor_msgs::msg::PointCloud2> best_points_aligned;
+  // Every particle's initial and result pose, coloured by score, iteration count and index.
+  std::optional<visualization_msgs::msg::MarkerArray> search_markers;
+};
+
 // The `ndt_align` service's search: sample initial poses with a tree-structured Parzen estimator,
 // align from each, and keep the best.
 //
-// One object per request rather than a long-lived module, because nothing here outlives a request
-// -- unlike MapUpdateModule, which owns the loaded map, or PoseInterpolationBuffer, which owns the
-// buffer. Making it a module would have meant a class whose only job was to hold `Params` and hand
-// out searches.
+// A free function rather than a module: nothing here outlives a call, so there is no state for an
+// object to hold -- unlike MapUpdateModule, which owns the loaded map, or PoseInterpolationBuffer,
+// which owns the buffer.
 //
-// No ROS beyond message types, and nothing injected. The two things that needed the node -- the
-// clock for the debug marker stamps, and the publishers fed while the search runs -- stay with the
-// caller, which keeps them by stepping the search itself:
-//
-//   PoseInitializationSearch search{params, ndt, scan, initial_pose};
-//   while (const auto progress = search.next()) {
-//     publish(*progress);
-//   }
-//   const auto result = search.finish();
-//
-// Collecting the particles and returning them at the end would be simpler and is wrong: the search
-// publishes as it goes "to see the progress and to avoid dropping data", and `points_aligned` has
-// a depth of ten. The characterization suite does not protect this -- it counts the clouds, so
-// collect-then-publish passes it -- the original comment does.
-//
-// Holds the NDT and the scan by reference. Must not outlive them, and the caller is expected to
-// hold the NDT's lock for the whole search, as before.
-class PoseInitializationSearch
-{
-public:
-  using PointSource = pcl::PointXYZ;
-  using PointTarget = pcl::PointXYZ;
-  using NdtType = pclomp::MultiGridNormalDistributionsTransform<PointSource, PointTarget>;
-  using CloudPtr = pcl::shared_ptr<pcl::PointCloud<PointSource>>;
-  using PoseWithCovarianceStamped = geometry_msgs::msg::PoseWithCovarianceStamped;
-
-  struct Params
-  {
-    int64_t particles_num{};
-    int64_t n_startup_trials{};
-    std::string map_frame;
-    // A best score at or below this is reported as not reliable. The service answers with it; it
-    // does not make the call fail.
-    double converged_param_nearest_voxel_transformation_likelihood{};
-  };
-
-  // One particle's outcome, handed back as it is produced.
-  struct Progress
-  {
-    int64_t index{};
-    Particle particle;
-    // The scan transformed by this particle's result pose, stamped and framed ready to publish.
-    sensor_msgs::msg::PointCloud2 sensor_points_in_map;
-  };
-
-  struct Estimate
-  {
-    PoseWithCovarianceStamped pose_with_covariance;
-    double score{};
-    bool reliable{};
-  };
-
-  // What the search produced, returned rather than written through an out-parameter, matching
-  // MapUpdateModule::UpdateResult: the caller applies the reports of the calls it makes in the
-  // order it makes them, which is what keeps the joined diagnostics message in order.
-  struct Result
-  {
-    // Empty when a precondition failed; `diagnostics` says which.
-    std::optional<Estimate> estimate;
-    DiagnosticsReport diagnostics;
-  };
-
-  // Evaluates the preconditions -- a map in `ndt`, a scan received -- recording both on the report
-  // either way. A failure leaves `next()` empty from the start, so the caller needs no branch for
-  // it before looping.
-  PoseInitializationSearch(
-    Params param, NdtType & ndt, CloudPtr sensor_points_in_baselink_frame,
-    PoseWithCovarianceStamped initial_pose_in_map_frame);
-
-  PoseInitializationSearch(const PoseInitializationSearch &) = delete;
-  PoseInitializationSearch & operator=(const PoseInitializationSearch &) = delete;
-  PoseInitializationSearch(PoseInitializationSearch &&) = delete;
-  PoseInitializationSearch & operator=(PoseInitializationSearch &&) = delete;
-  // Out of line: the sampler is only complete in the .cpp.
-  ~PoseInitializationSearch();
-
-  // Aligns from the next sampled pose. Empty once every particle has been tried.
-  [[nodiscard]] std::optional<Progress> next();
-
-  // The best particle, and the diagnostics for the whole search. Call once `next()` has run out;
-  // called earlier it reports as though the search had not run.
-  [[nodiscard]] Result finish();
-
-private:
-  Params param_;
-  NdtType & ndt_;
-  CloudPtr sensor_points_in_baselink_frame_;
-  PoseWithCovarianceStamped initial_pose_in_map_frame_;
-
-  DiagnosticsReport diagnostics_;
-  // Proposes the next initial pose to try and learns from each result. Null when a precondition
-  // failed, which is also what stops `next()` before it starts.
-  std::unique_ptr<autoware::localization_util::TreeStructuredParzenEstimator> pose_sampler_;
-  std::vector<Particle> particles_;
-  // Which particle comes next; also what tells `next()` when every one has been tried.
-  int64_t particle_index_{0};
-  // Reused across steps, as the single-call version reused it across iterations.
-  CloudPtr output_cloud_;
-};
+// No ROS beyond message types, and nothing injected. `now` stamps the debug markers, which is the
+// only thing here that wanted a clock. `ndt` is aligned against and mutated; the caller owns it
+// and is expected to hold its lock across the call.
+[[nodiscard]] PoseInitializationResult search_initial_pose(
+  const PoseInitializationParams & param,
+  pclomp::MultiGridNormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> & ndt,
+  const pcl::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> & scan_in_baselink_frame,
+  const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_in_map_frame,
+  const builtin_interfaces::msg::Time & now);
 
 }  // namespace autoware::ndt_scan_matcher
 

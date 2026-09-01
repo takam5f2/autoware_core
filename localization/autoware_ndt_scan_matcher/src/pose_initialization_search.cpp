@@ -27,9 +27,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
+#include <iterator>
 #include <memory>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -44,8 +45,14 @@ using autoware::localization_util::matrix4f_to_pose;
 using autoware::localization_util::pose_to_matrix4f;
 using autoware::localization_util::TreeStructuredParzenEstimator;
 
+using PointSource = pcl::PointXYZ;
+using PointTarget = pcl::PointXYZ;
+using NdtType = pclomp::MultiGridNormalDistributionsTransform<PointSource, PointTarget>;
+using CloudPtr = pcl::shared_ptr<pcl::PointCloud<PointSource>>;
+using PoseWithCovarianceStamped = geometry_msgs::msg::PoseWithCovarianceStamped;
+
 // The text `autoware::localization_util::output_pose_with_cov_to_log` builds, without its
-// RCLCPP_DEBUG_STREAM. Reproduced rather than called so that the module can record the line for
+// RCLCPP_DEBUG_STREAM. Reproduced rather than called so that the search can record the line for
 // the node to emit, instead of holding a logger.
 std::string pose_with_cov_log_line(
   const std::string & prefix, const geometry_msgs::msg::PoseWithCovarianceStamped & pose_with_cov)
@@ -68,45 +75,21 @@ std::string pose_with_cov_log_line(
   return ss.str();
 }
 
-}  // namespace
-
-PoseInitializationSearch::PoseInitializationSearch(
-  Params param, NdtType & ndt, CloudPtr sensor_points_in_baselink_frame,
-  PoseWithCovarianceStamped initial_pose_in_map_frame)
-: param_(std::move(param)),
-  ndt_(ndt),
-  sensor_points_in_baselink_frame_(std::move(sensor_points_in_baselink_frame)),
-  initial_pose_in_map_frame_(std::move(initial_pose_in_map_frame)),
-  output_cloud_(pcl::make_shared<pcl::PointCloud<PointSource>>())
+TreeStructuredParzenEstimator make_pose_sampler(
+  const PoseInitializationParams & param,
+  const PoseWithCovarianceStamped & initial_pose_in_map_frame)
 {
-  if (!diagnostics_.check(
-        "is_set_map_points", ndt_.hasTarget(), DiagnosticLevel::WARN,
-        "No InputTarget. Please check the map file and the map_loader service",
-        LogSite::AlignNoInputTarget)) {
-    return;
-  }
-
-  if (!diagnostics_.check(
-        "is_set_sensor_points", sensor_points_in_baselink_frame_ != nullptr, DiagnosticLevel::WARN,
-        "No InputSource. Please check the input lidar topic", LogSite::AlignNoInputSource)) {
-    return;
-  }
-
-  diagnostics_.logs.push_back(
-    {LogSite::AlignPoseInput,
-     pose_with_cov_log_line("align_pose_input", initial_pose_in_map_frame_)});
-
-  const auto base_rpy = autoware::localization_util::get_rpy(initial_pose_in_map_frame_);
+  const auto base_rpy = autoware::localization_util::get_rpy(initial_pose_in_map_frame);
   const Eigen::Map<const autoware::localization_util::RowMatrixXd> covariance = {
-    initial_pose_in_map_frame_.pose.covariance.data(), 6, 6};
+    initial_pose_in_map_frame.pose.covariance.data(), 6, 6};
 
   // Since only yaw is uniformly sampled, we define the mean and standard deviation for the others.
   const std::vector<double> sample_mean{
-    initial_pose_in_map_frame_.pose.pose.position.x,  // trans_x
-    initial_pose_in_map_frame_.pose.pose.position.y,  // trans_y
-    initial_pose_in_map_frame_.pose.pose.position.z,  // trans_z
-    base_rpy.x,                                       // angle_x
-    base_rpy.y                                        // angle_y
+    initial_pose_in_map_frame.pose.pose.position.x,  // trans_x
+    initial_pose_in_map_frame.pose.pose.position.y,  // trans_y
+    initial_pose_in_map_frame.pose.pose.position.z,  // trans_z
+    base_rpy.x,                                      // angle_x
+    base_rpy.y                                       // angle_y
   };
   const std::vector<double> sample_stddev{
     std::sqrt(covariance(0, 0)), std::sqrt(covariance(1, 1)), std::sqrt(covariance(2, 2)),
@@ -119,98 +102,127 @@ PoseInitializationSearch::PoseInitializationSearch(
   // exactly. A per-node counter would give the first property and not the second, and the shared
   // `static` this replaced gave neither reliably: which inputs a search proposed depended on how
   // many searches had run anywhere in the process before it.
-  pose_sampler_ = std::make_unique<TreeStructuredParzenEstimator>(
-    TreeStructuredParzenEstimator::Direction::MAXIMIZE, param_.n_startup_trials, sample_mean,
+  return TreeStructuredParzenEstimator{
+    TreeStructuredParzenEstimator::Direction::MAXIMIZE, param.n_startup_trials, sample_mean,
     sample_stddev,
-    static_cast<std::uint64_t>(to_nanoseconds(initial_pose_in_map_frame_.header.stamp)));
+    static_cast<std::uint64_t>(to_nanoseconds(initial_pose_in_map_frame.header.stamp))};
 }
 
-PoseInitializationSearch::~PoseInitializationSearch() = default;
-
-std::optional<PoseInitializationSearch::Progress> PoseInitializationSearch::next()
+geometry_msgs::msg::Pose to_pose(const TreeStructuredParzenEstimator::Input & input)
 {
-  if (!pose_sampler_ || particle_index_ >= param_.particles_num) {
-    return std::nullopt;
-  }
-
-  const TreeStructuredParzenEstimator::Input input = pose_sampler_->get_next_input();
-
-  geometry_msgs::msg::Pose initial_pose;
-  initial_pose.position.x = input[0];
-  initial_pose.position.y = input[1];
-  initial_pose.position.z = input[2];
-  geometry_msgs::msg::Vector3 init_rpy;
-  init_rpy.x = input[3];
-  init_rpy.y = input[4];
-  init_rpy.z = input[5];
+  geometry_msgs::msg::Pose pose;
+  pose.position.x = input[0];
+  pose.position.y = input[1];
+  pose.position.z = input[2];
   tf2::Quaternion tf_quaternion;
-  tf_quaternion.setRPY(init_rpy.x, init_rpy.y, init_rpy.z);
-  initial_pose.orientation = tf2::toMsg(tf_quaternion);
-
-  const Eigen::Matrix4f initial_pose_matrix = pose_to_matrix4f(initial_pose);
-  ndt_.align(*output_cloud_, initial_pose_matrix, sensor_points_in_baselink_frame_);
-  const pclomp::NdtResult ndt_result = ndt_.getResult();
-
-  const Particle particle(
-    initial_pose, matrix4f_to_pose(ndt_result.pose),
-    ndt_result.nearest_voxel_transformation_likelihood, ndt_result.iteration_num);
-  particles_.push_back(particle);
-
-  const geometry_msgs::msg::Pose pose = matrix4f_to_pose(ndt_result.pose);
-  const geometry_msgs::msg::Vector3 rpy = autoware::localization_util::get_rpy(pose);
-
-  TreeStructuredParzenEstimator::Input trial(6);
-  trial[0] = pose.position.x;
-  trial[1] = pose.position.y;
-  trial[2] = pose.position.z;
-  trial[3] = rpy.x;
-  trial[4] = rpy.y;
-  trial[5] = rpy.z;
-  pose_sampler_->add_trial(
-    TreeStructuredParzenEstimator::Trial{trial, ndt_result.transform_probability});
-
-  auto sensor_points_in_map_ptr = pcl::make_shared<pcl::PointCloud<PointSource>>();
-  autoware_utils_pcl::transform_pointcloud(
-    *sensor_points_in_baselink_frame_, *sensor_points_in_map_ptr, ndt_result.pose);
-
-  Progress progress{particle_index_, particle, sensor_msgs::msg::PointCloud2()};
-  pcl::toROSMsg(*sensor_points_in_map_ptr, progress.sensor_points_in_map);
-  progress.sensor_points_in_map.header.stamp = initial_pose_in_map_frame_.header.stamp;
-  progress.sensor_points_in_map.header.frame_id = param_.map_frame;
-
-  particle_index_++;
-  return progress;
+  tf_quaternion.setRPY(input[3], input[4], input[5]);
+  pose.orientation = tf2::toMsg(tf_quaternion);
+  return pose;
 }
 
-PoseInitializationSearch::Result PoseInitializationSearch::finish()
+}  // namespace
+
+PoseInitializationResult search_initial_pose(
+  const PoseInitializationParams & param, NdtType & ndt, const CloudPtr & scan_in_baselink_frame,
+  const PoseWithCovarianceStamped & initial_pose_in_map_frame,
+  const builtin_interfaces::msg::Time & now)
 {
-  Result result;
-  result.diagnostics = std::move(diagnostics_);
-  if (particles_.empty()) {
+  PoseInitializationResult result;
+  DiagnosticsReport & diagnostics = result.diagnostics;
+
+  if (!diagnostics.check(
+        "is_set_map_points", ndt.hasTarget(), DiagnosticLevel::WARN,
+        "No InputTarget. Please check the map file and the map_loader service",
+        LogSite::AlignNoInputTarget)) {
     return result;
   }
 
-  const auto best_particle_ptr = std::max_element(
-    std::begin(particles_), std::end(particles_),
-    [](const Particle & lhs, const Particle & rhs) { return lhs.score < rhs.score; });
+  if (!diagnostics.check(
+        "is_set_sensor_points", scan_in_baselink_frame != nullptr, DiagnosticLevel::WARN,
+        "No InputSource. Please check the input lidar topic", LogSite::AlignNoInputSource)) {
+    return result;
+  }
 
-  Estimate estimate;
-  estimate.pose_with_covariance.header.stamp = initial_pose_in_map_frame_.header.stamp;
-  estimate.pose_with_covariance.header.frame_id = param_.map_frame;
+  diagnostics.logs.push_back(
+    {LogSite::AlignPoseInput,
+     pose_with_cov_log_line("align_pose_input", initial_pose_in_map_frame)});
+
+  TreeStructuredParzenEstimator pose_sampler = make_pose_sampler(param, initial_pose_in_map_frame);
+
+  std::vector<Particle> particles;
+  // The matrix `align` produced for each particle, in the same order. Kept so that the winner's
+  // cloud is transformed by that matrix rather than by a pose round-trip through
+  // matrix4f_to_pose, which would round it through float.
+  std::vector<Eigen::Matrix4f> result_matrices;
+  // Reused across particles, as it was when this was one loop in the node.
+  const auto output_cloud = pcl::make_shared<pcl::PointCloud<PointSource>>();
+
+  for (int64_t i = 0; i < param.particles_num; i++) {
+    const geometry_msgs::msg::Pose initial_pose = to_pose(pose_sampler.get_next_input());
+
+    ndt.align(*output_cloud, pose_to_matrix4f(initial_pose), scan_in_baselink_frame);
+    const pclomp::NdtResult ndt_result = ndt.getResult();
+
+    const geometry_msgs::msg::Pose result_pose = matrix4f_to_pose(ndt_result.pose);
+    particles.emplace_back(
+      initial_pose, result_pose, ndt_result.nearest_voxel_transformation_likelihood,
+      ndt_result.iteration_num);
+    result_matrices.push_back(ndt_result.pose);
+
+    const geometry_msgs::msg::Vector3 rpy = autoware::localization_util::get_rpy(result_pose);
+    TreeStructuredParzenEstimator::Input trial(6);
+    trial[0] = result_pose.position.x;
+    trial[1] = result_pose.position.y;
+    trial[2] = result_pose.position.z;
+    trial[3] = rpy.x;
+    trial[4] = rpy.y;
+    trial[5] = rpy.z;
+    pose_sampler.add_trial(
+      TreeStructuredParzenEstimator::Trial{trial, ndt_result.transform_probability});
+  }
+
+  if (particles.empty()) {
+    return result;
+  }
+
+  visualization_msgs::msg::MarkerArray markers;
+  for (size_t i = 0; i < particles.size(); i++) {
+    push_debug_markers(markers, now, param.map_frame, particles[i], i);
+  }
+  result.search_markers = std::move(markers);
+
+  const auto best_particle_ptr = std::max_element(
+    std::begin(particles), std::end(particles),
+    [](const Particle & lhs, const Particle & rhs) { return lhs.score < rhs.score; });
+  const auto best_index =
+    static_cast<size_t>(std::distance(std::begin(particles), best_particle_ptr));
+
+  const auto scan_in_map = pcl::make_shared<pcl::PointCloud<PointSource>>();
+  autoware_utils_pcl::transform_pointcloud(
+    *scan_in_baselink_frame, *scan_in_map, result_matrices[best_index]);
+  sensor_msgs::msg::PointCloud2 best_points_aligned;
+  pcl::toROSMsg(*scan_in_map, best_points_aligned);
+  best_points_aligned.header.stamp = initial_pose_in_map_frame.header.stamp;
+  best_points_aligned.header.frame_id = param.map_frame;
+  result.best_points_aligned = std::move(best_points_aligned);
+
+  PoseInitializationEstimate estimate;
+  estimate.pose_with_covariance.header.stamp = initial_pose_in_map_frame.header.stamp;
+  estimate.pose_with_covariance.header.frame_id = param.map_frame;
   estimate.pose_with_covariance.pose.pose = best_particle_ptr->result_pose;
   estimate.score = best_particle_ptr->score;
   estimate.reliable =
-    (param_.converged_param_nearest_voxel_transformation_likelihood < estimate.score);
+    (param.converged_param_nearest_voxel_transformation_likelihood < estimate.score);
 
-  result.diagnostics.logs.push_back(
+  diagnostics.logs.push_back(
     {LogSite::AlignPoseOutput,
      pose_with_cov_log_line("align_pose_output", estimate.pose_with_covariance)});
-  result.diagnostics.add_key_value({"best_particle_score", estimate.score});
+  diagnostics.add_key_value({"best_particle_score", estimate.score});
 
   if (!estimate.reliable) {
     std::stringstream message;
     message << "Initial Pose Estimation is Unstable. Score is " << estimate.score;
-    result.diagnostics.logs.push_back({LogSite::AlignUnstableScore, message.str()});
+    diagnostics.logs.push_back({LogSite::AlignUnstableScore, message.str()});
   }
 
   result.estimate = std::move(estimate);

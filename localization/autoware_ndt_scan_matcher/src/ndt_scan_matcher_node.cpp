@@ -19,7 +19,6 @@
 #include <autoware/localization_util/util_func.hpp>
 #include <autoware/ndt_scan_matcher/ndt_omp/estimate_covariance.hpp>
 #include <autoware/ndt_scan_matcher/ndt_scan_matcher_node.hpp>
-#include <autoware/ndt_scan_matcher/particle.hpp>
 #include <autoware/qos_utils/qos_compatibility.hpp>
 #include <autoware_utils_geometry/geometry.hpp>
 #include <autoware_utils_pcl/transforms.hpp>
@@ -229,7 +228,7 @@ NdtScanMatcherNode::NdtScanMatcherNode(const rclcpp::NodeOptions & options)
     param_.covariance.covariance_estimation.scale_factor};
   scan_matching_module_ = std::make_unique<ScanMatchingModule>(std::move(scan_matching_params));
 
-  pose_initialization_params_ = PoseInitializationSearch::Params{
+  pose_initialization_params_ = PoseInitializationParams{
     param_.initial_pose_estimation.particles_num, param_.initial_pose_estimation.n_startup_trials,
     param_.frame.map_frame,
     param_.score_estimation.converged_param_nearest_voxel_transformation_likelihood};
@@ -266,27 +265,6 @@ NdtScanMatcherNode::get_differential_point_cloud_map(
   }
 
   return result.get();
-}
-
-void NdtScanMatcherNode::publish_pose_initialization_progress(
-  const PoseInitializationSearch::Progress & progress)
-{
-  // publish the estimated poses in 20 times to see the progress and to avoid dropping data
-  constexpr int64_t publish_num = 20;
-  const int64_t publish_interval =
-    std::max<int64_t>(param_.initial_pose_estimation.particles_num / publish_num, 1);
-
-  push_debug_markers(
-    monte_carlo_marker_array_, get_clock()->now(), param_.frame.map_frame, progress.particle,
-    progress.index);
-  if (
-    (progress.index + 1) % publish_interval == 0 ||
-    (progress.index + 1) == param_.initial_pose_estimation.particles_num) {
-    ndt_monte_carlo_initial_pose_marker_pub_->publish(monte_carlo_marker_array_);
-    monte_carlo_marker_array_.markers.clear();
-  }
-
-  sensor_aligned_pose_pub_->publish(progress.sensor_points_in_map);
 }
 
 void NdtScanMatcherNode::replay_logs(const std::vector<LogRequest> & logs)
@@ -613,20 +591,21 @@ void NdtScanMatcherNode::service_ndt_align_main(
 
   publish_loaded_map_if_present(result);
 
-  PoseInitializationSearch::Result align_result;
-  // The lock is held across the search, as before: it aligns against the installed NDT. Stepping
-  // it here rather than handing the module a callback is what keeps the publishing below in sight
-  // of the loop it belongs to.
+  PoseInitializationResult align_result;
+  // The lock is held across the search, as before: it aligns against the installed NDT. The
+  // publishing below is outside it, on what the search returned.
   ndt_ptr_.with([&](auto & ndt_ptr) {
-    PoseInitializationSearch search{
+    align_result = search_initial_pose(
       pose_initialization_params_, *ndt_ptr, sensor_points_in_baselink_frame_,
-      initial_pose_msg_in_map_frame};
-    while (const auto progress = search.next()) {
-      publish_pose_initialization_progress(*progress);
-    }
-    align_result = search.finish();
+      initial_pose_msg_in_map_frame, this->now());
   });
   replay_logs(align_result.diagnostics.logs);
+  if (align_result.search_markers) {
+    ndt_monte_carlo_initial_pose_marker_pub_->publish(*align_result.search_markers);
+  }
+  if (align_result.best_points_aligned) {
+    sensor_aligned_pose_pub_->publish(*align_result.best_points_aligned);
+  }
   apply_diagnostics_update(*diagnostics_ndt_align_, align_result.diagnostics);
 
   if (!align_result.estimate) {
