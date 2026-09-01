@@ -122,7 +122,7 @@ ScanMatchingModule::Result ScanMatchingModule::scan_match(
 
   result.output =
     build_output(input, ndt, *alignment, *scan_in_baselink_frame, exe_start_time, report);
-  result.succeeded = alignment->is_converged;
+  result.converged = alignment->is_converged;
   return result;
 }
 

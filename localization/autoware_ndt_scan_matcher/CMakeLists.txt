@@ -48,6 +48,7 @@ endif()
 # autoware_localization_util pulls rclcpp in transitively.
 ament_auto_add_library(${PROJECT_NAME}_core SHARED
   src/map_update_module.cpp
+  src/ndt_scan_matcher.cpp
   src/ndt_scan_matcher_helper.cpp
   src/particle.cpp
   src/pose_initialization_search.cpp

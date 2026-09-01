@@ -86,7 +86,7 @@ public:
   bool out_of_map_range(const geometry_msgs::msg::Point & position);
 
 private:
-  friend class NdtScanMatcherNode;
+  friend class NdtScanMatcher;
   friend class MapUpdateModuleTest;
 
   UpdateResult callback_timer(const geometry_msgs::msg::Point & position);

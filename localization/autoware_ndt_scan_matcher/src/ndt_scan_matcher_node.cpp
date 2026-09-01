@@ -183,23 +183,24 @@ NdtScanMatcherNode::NdtScanMatcherNode(const rclcpp::NodeOptions & options)
       std::placeholders::_2),
     AUTOWARE_DEFAULT_SERVICES_QOS_PROFILE(), sensor_callback_group);
 
-  ndt_ptr_.with([&](const auto & ndt_ptr) { ndt_ptr->setParams(param_.ndt); });
-
   // ROS-dependent resources for the map update module are owned by this node.
   loaded_pcd_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     "debug/loaded_pointcloud_map", rclcpp::QoS{1}.transient_local());
   pcd_loader_client_ =
     this->create_client<MapUpdateModule::GetDifferentialPointCloudMap>("pcd_loader_service");
 
-  map_update_module_ = std::make_unique<MapUpdateModule>(
-    ndt_ptr_, param_.dynamic_map_loading,
-    [this](const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request) {
-      return this->get_differential_point_cloud_map(request);
-    });
+  // HyperParameters fills the core's own Params: those fields serve the node too, so it holds a
+  // copy rather than the core's struct.
+  NdtScanMatcher::Params matcher_params;
+  matcher_params.ndt = param_.ndt;
+  matcher_params.map_update = param_.dynamic_map_loading;
+  matcher_params.skipping_publish_num = param_.validation.skipping_publish_num;
+  matcher_params.pose_initialization = PoseInitializationParams{
+    param_.initial_pose_estimation.particles_num, param_.initial_pose_estimation.n_startup_trials,
+    param_.frame.map_frame,
+    param_.score_estimation.converged_param_nearest_voxel_transformation_likelihood};
 
-  // HyperParameters fills the module's own Params: those fields serve the node too, so it holds a
-  // copy rather than the module's struct.
-  ScanMatchingModule::Params scan_matching_params;
+  ScanMatchingModule::Params & scan_matching_params = matcher_params.scan_matching;
   scan_matching_params.frame.base_frame = param_.frame.base_frame;
   scan_matching_params.frame.ndt_base_frame = param_.frame.ndt_base_frame;
   scan_matching_params.frame.map_frame = param_.frame.map_frame;
@@ -226,12 +227,11 @@ NdtScanMatcherNode::NdtScanMatcherNode(const rclcpp::NodeOptions & options)
     param_.covariance.covariance_estimation.initial_pose_offset_model_y,
     param_.covariance.covariance_estimation.temperature,
     param_.covariance.covariance_estimation.scale_factor};
-  scan_matching_module_ = std::make_unique<ScanMatchingModule>(std::move(scan_matching_params));
-
-  pose_initialization_params_ = PoseInitializationParams{
-    param_.initial_pose_estimation.particles_num, param_.initial_pose_estimation.n_startup_trials,
-    param_.frame.map_frame,
-    param_.score_estimation.converged_param_nearest_voxel_transformation_likelihood};
+  matcher_ = std::make_unique<NdtScanMatcher>(
+    std::move(matcher_params),
+    [this](const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request) {
+      return this->get_differential_point_cloud_map(request);
+    });
 
   diagnostics_scan_points_ = std::make_unique<DiagnosticsInterface>(this, "scan_matching_status");
   diagnostics_initial_pose_ =
@@ -317,10 +317,11 @@ void NdtScanMatcherNode::apply_diagnostics_update(
 }
 
 void NdtScanMatcherNode::publish_loaded_map_if_present(
-  const MapUpdateModule::UpdateResult & result, const std::optional<rclcpp::Time> & stamp) const
+  const std::optional<sensor_msgs::msg::PointCloud2> & loaded_pcd_map,
+  const std::optional<rclcpp::Time> & stamp) const
 {
-  if (result.loaded_pcd_map.has_value()) {
-    auto msg = result.loaded_pcd_map.value();
+  if (loaded_pcd_map.has_value()) {
+    auto msg = *loaded_pcd_map;
     msg.header.stamp = stamp ? *stamp : this->now();
     loaded_pcd_pub_->publish(msg);
   }
@@ -343,24 +344,10 @@ void NdtScanMatcherNode::callback_timer()
     return;
   }
 
-  // check is_set_last_update_position
-  const auto latest_ekf_position = scan_matching_module_->latest_ekf_position();
-  const bool is_set_last_update_position = (latest_ekf_position != std::nullopt);
-  diagnostics_map_update_->add_key_value(
-    "is_set_last_update_position", is_set_last_update_position);
-  if (!is_set_last_update_position) {
-    diagnostics_map_update_->update_level_and_message(
-      diagnostic_msgs::msg::DiagnosticStatus::WARN,
-      "Cannot find the reference position for map update."
-      "Please check if the EKF odometry is provided to NDT.");
-    diagnostics_map_update_->publish(ros_time_now);
-    return;
-  }
-
-  auto result = map_update_module_->callback_timer(latest_ekf_position.value());
+  auto result = matcher_->update_map_periodically();
   apply_diagnostics_update(*diagnostics_map_update_, result.diagnostics);
 
-  publish_loaded_map_if_present(result, ros_time_now);
+  publish_loaded_map_if_present(result.loaded_pcd_map, ros_time_now);
   diagnostics_map_update_->publish(ros_time_now);
 }
 
@@ -370,7 +357,7 @@ void NdtScanMatcherNode::callback_initial_pose(
   diagnostics_initial_pose_->clear();
 
   DiagnosticsReport report;
-  scan_matching_module_->push_initial_pose(initial_pose_msg_ptr, is_activated_, report);
+  matcher_->push_initial_pose(initial_pose_msg_ptr, is_activated_, report);
   replay_logs(report.logs);
   apply_diagnostics_update(*diagnostics_initial_pose_, report);
 
@@ -385,7 +372,7 @@ void NdtScanMatcherNode::callback_regularization_pose(
   diagnostics_regularization_pose_->add_key_value(
     "topic_time_stamp", static_cast<rclcpp::Time>(pose_conv_msg_ptr->header.stamp).nanoseconds());
 
-  scan_matching_module_->push_regularization_pose(pose_conv_msg_ptr);
+  matcher_->push_regularization_pose(pose_conv_msg_ptr);
 
   diagnostics_regularization_pose_->publish(pose_conv_msg_ptr->header.stamp);
 }
@@ -399,7 +386,7 @@ void NdtScanMatcherNode::callback_sensor_points(
   // The keys, the level, the message and the log records all come back on one report rather than
   // being written as they are produced, so that they are forwarded and replayed from one place no
   // matter which of the eight gates returned.
-  ScanMatchingModule::ScanInput input;
+  NdtScanMatcher::ScanInput input;
   input.scan = sensor_points_msg_in_sensor_frame;
   input.now = this->now();
   input.is_activated = is_activated_;
@@ -407,40 +394,19 @@ void NdtScanMatcherNode::callback_sensor_points(
     lookup_base_from_sensor(sensor_points_msg_in_sensor_frame->header.frame_id);
   input.voxel_score_points_wanted = voxel_score_points_pub_->get_subscription_count() > 0;
 
-  ScanMatchingModule::Result match;
-  // The lock is held across the match, as before; the publishing below happens after it.
-  ndt_ptr_.with([&](const auto & ndt_ptr) {
-    match = scan_matching_module_->scan_match(input, *ndt_ptr, *map_update_module_);
-  });
-
-  if (match.scan_in_baselink_frame) {
-    sensor_points_in_baselink_frame_ = match.scan_in_baselink_frame;
-  }
-  DiagnosticsReport & report = match.diagnostics;
-  replay_logs(report.logs);
+  auto match = matcher_->match_scan(input);
+  replay_logs(match.diagnostics.logs);
   if (match.output) {
     publish_scan_matching_output(*match.output);
   }
-  const bool is_succeed_scan_matching = match.succeeded;
-
-  // check skipping_publish_num
-  skipping_publish_num_ =
-    ((is_succeed_scan_matching || !is_activated_) ? 0 : (skipping_publish_num_ + 1));
-  report.add_key_value({"skipping_publish_num", skipping_publish_num_});
-  if (skipping_publish_num_ >= param_.validation.skipping_publish_num) {
-    std::stringstream message;
-    message << "skipping_publish_num exceed limit (" << skipping_publish_num_ << " times).";
-    report.update_level_and_message(DiagnosticLevel::WARN, message.str());
-  }
-
-  apply_diagnostics_update(*diagnostics_scan_points_, report);
+  apply_diagnostics_update(*diagnostics_scan_points_, match.diagnostics);
   diagnostics_scan_points_->publish(sensor_points_msg_in_sensor_frame->header.stamp);
 }
 
-ScanMatchingModule::TransformLookup NdtScanMatcherNode::lookup_base_from_sensor(
+NdtScanMatcher::TransformLookup NdtScanMatcherNode::lookup_base_from_sensor(
   const std::string & sensor_frame)
 {
-  ScanMatchingModule::TransformLookup lookup;
+  NdtScanMatcher::TransformLookup lookup;
   if (sensor_frame == param_.frame.base_frame) {
     // The module short-circuits on equal frames, but it still needs a transform to be present in
     // order to get that far.
@@ -457,7 +423,7 @@ ScanMatchingModule::TransformLookup NdtScanMatcherNode::lookup_base_from_sensor(
 }
 
 void NdtScanMatcherNode::publish_scan_matching_output(
-  const ScanMatchingModule::ScanMatchingOutput & output)
+  const NdtScanMatcher::ScanMatchingOutput & output)
 {
   // `if (opt)` and nothing else. See ScanMatchingOutput's comment for why.
   if (output.multi_ndt_pose) {
@@ -520,7 +486,7 @@ void NdtScanMatcherNode::service_trigger_node(
 
   is_activated_ = req->data;
   if (is_activated_) {
-    scan_matching_module_->clear_initial_pose_buffer();
+    matcher_->clear_initial_pose_buffer();
   }
   res->success = true;
 
@@ -586,20 +552,10 @@ void NdtScanMatcherNode::service_ndt_align_main(
   auto initial_pose_msg_in_map_frame =
     autoware::localization_util::transform(req->pose_with_covariance, transform_s2t);
   initial_pose_msg_in_map_frame.header.stamp = req->pose_with_covariance.header.stamp;
-  auto result = map_update_module_->update_map(initial_pose_msg_in_map_frame.pose.pose.position);
-  apply_diagnostics_update(*diagnostics_ndt_align_, result.diagnostics);
 
-  publish_loaded_map_if_present(result);
-
-  PoseInitializationResult align_result;
-  // The lock is held across the search, as before: it aligns against the installed NDT. The
-  // publishing below is outside it, on what the search returned.
-  ndt_ptr_.with([&](auto & ndt_ptr) {
-    align_result = search_initial_pose(
-      pose_initialization_params_, *ndt_ptr, sensor_points_in_baselink_frame_,
-      initial_pose_msg_in_map_frame, this->now());
-  });
+  auto align_result = matcher_->align({initial_pose_msg_in_map_frame, this->now()});
   replay_logs(align_result.diagnostics.logs);
+  publish_loaded_map_if_present(align_result.loaded_pcd_map);
   if (align_result.search_markers) {
     ndt_monte_carlo_initial_pose_marker_pub_->publish(*align_result.search_markers);
   }

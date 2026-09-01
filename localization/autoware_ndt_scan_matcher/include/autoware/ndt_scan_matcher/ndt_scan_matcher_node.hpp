@@ -18,13 +18,9 @@
 #define FMT_HEADER_ONLY
 
 #include "diagnostics_report.hpp"
-#include "guarded.hpp"
 #include "hyper_parameters.hpp"
 #include "map_update_module.hpp"
-#include "ndt_omp/multigrid_ndt_omp.h"
-#include "pose_initialization_search.hpp"
-#include "pose_interpolation_buffer.hpp"
-#include "scan_matching_module.hpp"
+#include "ndt_scan_matcher.hpp"
 
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
 #include <autoware_utils_logging/logger_level_configure.hpp>
@@ -61,7 +57,6 @@
 #include <deque>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -74,11 +69,6 @@ using DiagnosticsInterface = autoware_utils_diagnostics::DiagnosticsInterface;
 
 class NdtScanMatcherNode : public rclcpp::Node
 {
-  using PointSource = pcl::PointXYZ;
-  using PointTarget = pcl::PointXYZ;
-  using NormalDistributionsTransform =
-    pclomp::MultiGridNormalDistributionsTransform<PointSource, PointTarget>;
-
 public:
   explicit NdtScanMatcherNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
@@ -100,7 +90,7 @@ private:
   void callback_sensor_points(
     sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame);
   // The TF the scan match needs, looked up here because the module holds no TF buffer.
-  [[nodiscard]] ScanMatchingModule::TransformLookup lookup_base_from_sensor(
+  [[nodiscard]] NdtScanMatcher::TransformLookup lookup_base_from_sensor(
     const std::string & sensor_frame);
 
   void service_trigger_node(
@@ -116,7 +106,7 @@ private:
       req,
     autoware_internal_localization_msgs::srv::PoseWithCovarianceStamped::Response::SharedPtr res);
 
-  void publish_scan_matching_output(const ScanMatchingModule::ScanMatchingOutput & output);
+  void publish_scan_matching_output(const NdtScanMatcher::ScanMatchingOutput & output);
 
   MapUpdateModule::GetDifferentialPointCloudMap::Response::SharedPtr
   get_differential_point_cloud_map(
@@ -130,7 +120,7 @@ private:
     DiagnosticsInterface & diagnostics, const DiagnosticsReport & report);
 
   void publish_loaded_map_if_present(
-    const MapUpdateModule::UpdateResult & result,
+    const std::optional<sensor_msgs::msg::PointCloud2> & loaded_pcd_map,
     const std::optional<rclcpp::Time> & stamp = std::nullopt) const;
 
   rclcpp::TimerBase::SharedPtr map_update_timer_;
@@ -185,13 +175,6 @@ private:
 
   rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
 
-  Guarded<std::shared_ptr<NormalDistributionsTransform>> ndt_ptr_{
-    std::make_shared<NormalDistributionsTransform>()};
-
-  pcl::shared_ptr<pcl::PointCloud<PointSource>> sensor_points_in_baselink_frame_;
-
-  // Keep latest position for dynamic map loading
-
   std::atomic<bool> is_activated_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_scan_points_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_initial_pose_;
@@ -199,13 +182,10 @@ private:
   std::unique_ptr<DiagnosticsInterface> diagnostics_map_update_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_ndt_align_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_trigger_node_;
-  // Consecutive scans that produced nothing to publish, reset by a success or by deactivation.
-  // A member rather than a function-local static: one counter per node, not one per process.
-  int64_t skipping_publish_num_{0};
 
-  std::unique_ptr<MapUpdateModule> map_update_module_;
-  std::unique_ptr<ScanMatchingModule> scan_matching_module_;
-  PoseInitializationParams pose_initialization_params_;
+  // Everything this node is a node for. It owns the NDT, its lock, and the modules; this class
+  // owns only the ROS side of each callback.
+  std::unique_ptr<NdtScanMatcher> matcher_;
   std::unique_ptr<autoware_utils_logging::LoggerLevelConfigure> logger_configure_;
 
   HyperParameters param_;

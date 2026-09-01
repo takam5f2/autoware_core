@@ -123,10 +123,14 @@ struct DiagnosticsReport
     return true;
   }
 
-  // Accumulates like DiagnosticsInterface: raises the level and appends the message.
+  // Accumulates like DiagnosticsInterface: raises the level and appends the message. An empty
+  // message is skipped, as it is there -- without that, `append` below would join a separator
+  // onto nothing for a report that was raised without a message.
   void update_level_and_message(DiagnosticLevel new_level, const std::string & new_message)
   {
-    if (static_cast<int8_t>(new_level) > static_cast<int8_t>(DiagnosticLevel::OK)) {
+    if (
+      static_cast<int8_t>(new_level) > static_cast<int8_t>(DiagnosticLevel::OK) &&
+      !new_message.empty()) {
       if (!message.empty()) {
         message += "; ";
       }
@@ -135,6 +139,23 @@ struct DiagnosticsReport
     if (static_cast<int8_t>(new_level) > static_cast<int8_t>(level)) {
       level = new_level;
     }
+  }
+
+  // Merges a report produced later into this one: keys and logs in call order, level and message
+  // accumulated as above.
+  //
+  // This is what forwarding two reports to one DiagnosticsInterface in turn used to do, and it is
+  // what keeps `AligningOutsideMapRangeFailsWithThreeJoinedMessages` joined in the right order now
+  // that the map update and the pose search report into a single call's result.
+  void append(DiagnosticsReport other)
+  {
+    for (auto & key_value : other.key_values) {
+      key_values.push_back(std::move(key_value));
+    }
+    for (auto & log : other.logs) {
+      logs.push_back(std::move(log));
+    }
+    update_level_and_message(other.level, other.message);
   }
 };
 

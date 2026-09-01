@@ -208,9 +208,9 @@ public:
     // The scan in base frame, once it has passed the distance gate. The caller keeps it: the
     // align service reads it too. Null when the scan never got that far.
     CloudPtr scan_in_baselink_frame;
-    // The value `callback_sensor_points` returned, used only to drive the skip counter. Not for
-    // deciding what to publish -- that is what the optionals above are for.
-    bool succeeded{};
+    // Whether the alignment converged, which is what drives the skip counter. What to publish is
+    // not decided from here -- that is what the optionals above are for.
+    bool converged{};
   };
 
   explicit ScanMatchingModule(Params param);
