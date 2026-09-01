@@ -17,6 +17,7 @@
 
 #include "map_update_module.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
+#include "ndt_scan_matcher.hpp"
 #include "scan_matching_module.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -206,6 +207,52 @@ public:
       node->declare_parameter<double>("dynamic_map_loading.lidar_radius");
     dynamic_map_loading.publish_loaded_map =
       node->declare_parameter<bool>("dynamic_map_loading.publish_loaded_map");
+  }
+
+  // The declared parameters as the core wants them.
+  //
+  // This adapter is the only thing in the package that may see both sides: NdtScanMatcher::Params
+  // cannot take a HyperParameters, because naming this type would put rclcpp back into the core.
+  // The dependency runs one way -- the adapter knows the core, the core knows nothing of it.
+  //
+  // The copying below is field by field rather than by holding the core's structs, because most of
+  // these values serve the node as well as the core.
+  [[nodiscard]] NdtScanMatcher::Params to_core_params() const
+  {
+    NdtScanMatcher::Params param;
+    param.ndt = ndt;
+    param.map_update = dynamic_map_loading;
+    param.skipping_publish_num = validation.skipping_publish_num;
+    param.pose_initialization = PoseInitializationParams{
+      initial_pose_estimation.particles_num, initial_pose_estimation.n_startup_trials,
+      frame.map_frame, score_estimation.converged_param_nearest_voxel_transformation_likelihood};
+
+    ScanMatchingModule::Params & scan_matching = param.scan_matching;
+    scan_matching.frame.base_frame = frame.base_frame;
+    scan_matching.frame.ndt_base_frame = frame.ndt_base_frame;
+    scan_matching.frame.map_frame = frame.map_frame;
+    scan_matching.sensor_points.timeout_sec = sensor_points.timeout_sec;
+    scan_matching.sensor_points.required_distance = sensor_points.required_distance;
+    scan_matching.ndt_regularization_enable = ndt_regularization_enable;
+    scan_matching.validation = {
+      validation.initial_pose_timeout_sec, validation.initial_pose_distance_tolerance_m,
+      validation.initial_to_result_distance_tolerance_m,
+      validation.critical_upper_bound_exe_time_ms};
+    scan_matching.score_estimation.converged_param_type = score_estimation.converged_param_type;
+    scan_matching.score_estimation.converged_param_transform_probability =
+      score_estimation.converged_param_transform_probability;
+    scan_matching.score_estimation.converged_param_nearest_voxel_transformation_likelihood =
+      score_estimation.converged_param_nearest_voxel_transformation_likelihood;
+    scan_matching.score_estimation.no_ground_points = {
+      score_estimation.no_ground_points.enable,
+      score_estimation.no_ground_points.z_margin_for_ground_removal};
+    scan_matching.covariance.output_pose_covariance = covariance.output_pose_covariance;
+    scan_matching.covariance.covariance_estimation = {
+      covariance.covariance_estimation.covariance_estimation_type,
+      covariance.covariance_estimation.initial_pose_offset_model_x,
+      covariance.covariance_estimation.initial_pose_offset_model_y,
+      covariance.covariance_estimation.temperature, covariance.covariance_estimation.scale_factor};
+    return param;
   }
 };
 

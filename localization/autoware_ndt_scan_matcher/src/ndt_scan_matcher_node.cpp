@@ -189,46 +189,8 @@ NdtScanMatcherNode::NdtScanMatcherNode(const rclcpp::NodeOptions & options)
   pcd_loader_client_ =
     this->create_client<MapUpdateModule::GetDifferentialPointCloudMap>("pcd_loader_service");
 
-  // HyperParameters fills the core's own Params: those fields serve the node too, so it holds a
-  // copy rather than the core's struct.
-  NdtScanMatcher::Params matcher_params;
-  matcher_params.ndt = param_.ndt;
-  matcher_params.map_update = param_.dynamic_map_loading;
-  matcher_params.skipping_publish_num = param_.validation.skipping_publish_num;
-  matcher_params.pose_initialization = PoseInitializationParams{
-    param_.initial_pose_estimation.particles_num, param_.initial_pose_estimation.n_startup_trials,
-    param_.frame.map_frame,
-    param_.score_estimation.converged_param_nearest_voxel_transformation_likelihood};
-
-  ScanMatchingModule::Params & scan_matching_params = matcher_params.scan_matching;
-  scan_matching_params.frame.base_frame = param_.frame.base_frame;
-  scan_matching_params.frame.ndt_base_frame = param_.frame.ndt_base_frame;
-  scan_matching_params.frame.map_frame = param_.frame.map_frame;
-  scan_matching_params.sensor_points.timeout_sec = param_.sensor_points.timeout_sec;
-  scan_matching_params.sensor_points.required_distance = param_.sensor_points.required_distance;
-  scan_matching_params.ndt_regularization_enable = param_.ndt_regularization_enable;
-  scan_matching_params.validation = {
-    param_.validation.initial_pose_timeout_sec, param_.validation.initial_pose_distance_tolerance_m,
-    param_.validation.initial_to_result_distance_tolerance_m,
-    param_.validation.critical_upper_bound_exe_time_ms};
-  scan_matching_params.score_estimation.converged_param_type =
-    param_.score_estimation.converged_param_type;
-  scan_matching_params.score_estimation.converged_param_transform_probability =
-    param_.score_estimation.converged_param_transform_probability;
-  scan_matching_params.score_estimation.converged_param_nearest_voxel_transformation_likelihood =
-    param_.score_estimation.converged_param_nearest_voxel_transformation_likelihood;
-  scan_matching_params.score_estimation.no_ground_points = {
-    param_.score_estimation.no_ground_points.enable,
-    param_.score_estimation.no_ground_points.z_margin_for_ground_removal};
-  scan_matching_params.covariance.output_pose_covariance = param_.covariance.output_pose_covariance;
-  scan_matching_params.covariance.covariance_estimation = {
-    param_.covariance.covariance_estimation.covariance_estimation_type,
-    param_.covariance.covariance_estimation.initial_pose_offset_model_x,
-    param_.covariance.covariance_estimation.initial_pose_offset_model_y,
-    param_.covariance.covariance_estimation.temperature,
-    param_.covariance.covariance_estimation.scale_factor};
   matcher_ = std::make_unique<NdtScanMatcher>(
-    std::move(matcher_params),
+    param_.to_core_params(),
     [this](const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request) {
       return this->get_differential_point_cloud_map(request);
     });
