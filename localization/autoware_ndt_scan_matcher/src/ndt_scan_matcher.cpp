@@ -42,13 +42,16 @@ NdtScanMatcher::NdtScanMatcher(Params param, MapUpdateModule::PcdLoaderFunction 
 {
 }
 
-NdtScanMatcher::ScanResult NdtScanMatcher::match_scan(const ScanInput & input)
+NdtScanMatcher::ScanResult NdtScanMatcher::match_scan(
+  const sensor_msgs::msg::PointCloud2::ConstSharedPtr & scan,
+  const builtin_interfaces::msg::Time & now, const TransformLookup & base_from_sensor)
 {
   ScanMatchingModule::Result match;
   // The lock is held across the match; everything the caller publishes is assembled inside it and
   // handed back for publishing outside.
-  ndt_ptr_.with(
-    [&](const auto & ndt_ptr) { match = scan_matching_.scan_match(input, *ndt_ptr, map_update_); });
+  ndt_ptr_.with([&](const auto & ndt_ptr) {
+    match = scan_matching_.scan_match(scan, now, base_from_sensor, *ndt_ptr, map_update_);
+  });
 
   if (match.scan_in_baselink_frame) {
     // Taken after the NDT lock is released, so the two are never held together.

@@ -59,7 +59,6 @@ public:
   using PoseWithCovarianceStamped = geometry_msgs::msg::PoseWithCovarianceStamped;
 
   // Defined once, by the module that reads them; named here so callers need only this header.
-  using ScanInput = ScanMatchingModule::ScanInput;
   using ScanMatchingOutput = ScanMatchingModule::ScanMatchingOutput;
   using TransformLookup = ScanMatchingModule::TransformLookup;
 
@@ -87,7 +86,12 @@ public:
     // asymmetry between the unconditional tf and the converged-only pose gets broken.
     std::optional<ScanMatchingOutput> output;
   };
-  [[nodiscard]] ScanResult match_scan(const ScanInput & input);
+  // The scan, and the two things about it the node had to look up: `now` for the delay check,
+  // because this class reads no clock, and the sensor-to-base transform, because it holds no TF
+  // buffer.
+  [[nodiscard]] ScanResult match_scan(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr & scan,
+    const builtin_interfaces::msg::Time & now, const TransformLookup & base_from_sensor);
 
   // The periodic map update. Reports `is_activated` and `is_set_last_update_position`, and touches
   // nothing else until the trigger service has activated the matcher and an initial pose has

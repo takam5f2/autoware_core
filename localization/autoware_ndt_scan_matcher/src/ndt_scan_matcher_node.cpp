@@ -336,13 +336,9 @@ void NdtScanMatcherNode::callback_sensor_points(
   // The keys, the level, the message and the log records all come back on one report rather than
   // being written as they are produced, so that they are forwarded and replayed from one place no
   // matter which of the eight gates returned.
-  NdtScanMatcher::ScanInput input;
-  input.scan = sensor_points_msg_in_sensor_frame;
-  input.now = this->now();
-  input.base_from_sensor =
-    lookup_base_from_sensor(sensor_points_msg_in_sensor_frame->header.frame_id);
-
-  auto match = matcher_->match_scan(input);
+  auto match = matcher_->match_scan(
+    sensor_points_msg_in_sensor_frame, this->now(),
+    lookup_base_from_sensor(sensor_points_msg_in_sensor_frame->header.frame_id));
   replay_logs(match.diagnostics.logs);
   if (match.output) {
     publish_scan_matching_output(*match.output);

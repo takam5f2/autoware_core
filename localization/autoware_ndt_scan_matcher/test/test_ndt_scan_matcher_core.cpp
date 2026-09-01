@@ -199,17 +199,29 @@ protected:
     matcher_ = std::make_unique<NdtScanMatcher>(shipped_params(), make_loader_returning_cell());
   }
 
-  // A scan the hot path will accept as far as the activation gate: non-empty, undelayed, and with
-  // the sensor frame equal to the base frame so that no transform is applied. Whether the gate
-  // lets it through is the matcher's own state, set with set_activated().
-  static NdtScanMatcher::ScanInput make_scan_input(const int32_t sec = 10)
+  // A scan the hot path will accept as far as the activation gate: non-empty, and by default in
+  // the base frame, where the module short-circuits the transform. Whether the gate lets it
+  // through is the matcher's own state, set with set_activated().
+  static sensor_msgs::msg::PointCloud2::ConstSharedPtr make_scan(
+    const int32_t sec = 10, const std::string & frame_id = "base_link")
   {
-    NdtScanMatcher::ScanInput input;
-    input.scan =
-      std::make_shared<sensor_msgs::msg::PointCloud2>(make_scan_msg(make_time(sec), "base_link"));
-    input.now = make_time(sec);
-    input.base_from_sensor.transform = geometry_msgs::msg::TransformStamped();
-    return input;
+    return std::make_shared<sensor_msgs::msg::PointCloud2>(make_scan_msg(make_time(sec), frame_id));
+  }
+
+  // A transform the node found. The value does not matter for a scan already in the base frame.
+  static NdtScanMatcher::TransformLookup found_transform()
+  {
+    NdtScanMatcher::TransformLookup lookup;
+    lookup.transform = geometry_msgs::msg::TransformStamped();
+    return lookup;
+  }
+
+  // A transform the node failed to find, carrying the text the diagnostics message prefixes.
+  static NdtScanMatcher::TransformLookup missing_transform(const std::string & error)
+  {
+    NdtScanMatcher::TransformLookup lookup;
+    lookup.error = error;
+    return lookup;
   }
 
   std::unique_ptr<NdtScanMatcher> matcher_;
@@ -223,10 +235,9 @@ TEST_F(NdtScanMatcherCoreTest, EmptyScanIsRejectedOnItsSize)  // NOLINT
   empty.header.frame_id = "base_link";
 
   matcher_->set_activated(true);
-  auto input = make_scan_input();
-  input.scan = std::make_shared<sensor_msgs::msg::PointCloud2>(empty);
 
-  const auto result = matcher_->match_scan(input);
+  const auto result = matcher_->match_scan(
+    std::make_shared<sensor_msgs::msg::PointCloud2>(empty), make_time(10), found_transform());
 
   EXPECT_FALSE(result.output.has_value());
   EXPECT_EQ(result.diagnostics.message, "Sensor points is empty.");
@@ -243,13 +254,9 @@ TEST_F(NdtScanMatcherCoreTest, EmptyScanIsRejectedOnItsSize)  // NOLINT
 TEST_F(NdtScanMatcherCoreTest, ScanWithoutATransformIsAnErrorAndRecordsItsLogSite)  // NOLINT
 {
   matcher_->set_activated(true);
-  auto input = make_scan_input();
-  input.scan =
-    std::make_shared<sensor_msgs::msg::PointCloud2>(make_scan_msg(make_time(10), "lidar_top"));
-  input.base_from_sensor.transform = std::nullopt;
-  input.base_from_sensor.error = "Could not find a connection";
 
-  const auto result = matcher_->match_scan(input);
+  const auto result = matcher_->match_scan(
+    make_scan(10, "lidar_top"), make_time(10), missing_transform("Could not find a connection"));
 
   EXPECT_FALSE(result.output.has_value());
   EXPECT_EQ(level_of(result.diagnostics), 2);  // ERROR
@@ -272,7 +279,7 @@ TEST_F(NdtScanMatcherCoreTest, AScanKeptWhileDeactivatedIsTheOneAlignSearchesFro
   EXPECT_EQ(keys_in_order(before.diagnostics).back(), "is_set_sensor_points")
     << "with no scan yet, the search should stop on the sensor-points check";
 
-  const auto scan = matcher_->match_scan(make_scan_input());
+  const auto scan = matcher_->match_scan(make_scan(), make_time(10), found_transform());
   ASSERT_FALSE(scan.output.has_value()) << "the activation gate should have stopped the match";
 
   const auto after = matcher_->align({make_pose(map_center_x, map_center_y), make_time(10)});
@@ -352,12 +359,12 @@ TEST_F(NdtScanMatcherCoreTest, SkipCounterWarnsAtTheLimitAndResetsWhenDeactivate
   // Nothing is set up for a match to succeed, so every activated scan below is a skip.
   matcher_->set_activated(true);
   for (int64_t expected = 1; expected <= 4; expected++) {
-    const auto result = matcher_->match_scan(make_scan_input());
+    const auto result = matcher_->match_scan(make_scan(), make_time(10), found_transform());
     EXPECT_EQ(value_of_skip_count(result.diagnostics), expected);
     EXPECT_EQ(level_of(result.diagnostics), 1) << "WARN from the gate, not yet from the counter";
   }
 
-  const auto at_limit = matcher_->match_scan(make_scan_input());
+  const auto at_limit = matcher_->match_scan(make_scan(), make_time(10), found_transform());
   EXPECT_EQ(value_of_skip_count(at_limit.diagnostics), 5);
   EXPECT_NE(
     at_limit.diagnostics.message.find("skipping_publish_num exceed limit (5 times)."),
@@ -365,7 +372,7 @@ TEST_F(NdtScanMatcherCoreTest, SkipCounterWarnsAtTheLimitAndResetsWhenDeactivate
     << "message was: " << at_limit.diagnostics.message;
 
   matcher_->set_activated(false);
-  const auto deactivated = matcher_->match_scan(make_scan_input());
+  const auto deactivated = matcher_->match_scan(make_scan(), make_time(10), found_transform());
   EXPECT_EQ(value_of_skip_count(deactivated.diagnostics), 0);
 }
 

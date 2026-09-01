@@ -144,15 +144,6 @@ public:
     std::string error;
   };
 
-  struct ScanInput
-  {
-    sensor_msgs::msg::PointCloud2::ConstSharedPtr scan;  // in the sensor frame
-    // `now()` at the callback's start, for the delay check. This module reads no clock.
-    builtin_interfaces::msg::Time now;
-    // sensor frame -> base frame, looked up by the node.
-    TransformLookup base_from_sensor;
-  };
-
   // Everything one scan match produces for the outside world, assembled while the NDT lock is
   // held and published by the caller once it is released. Message types and PODs only.
   //
@@ -223,8 +214,13 @@ public:
   // `ndt` is mutated (regularization pose, then align). The caller owns it and is expected to
   // hold its lock across this call. `map_update` is asked what the loaded map covers, which is
   // only answerable once the initial pose has been interpolated.
+  // One scan, and the two things about it that only the caller can look up: this module holds no
+  // clock and no TF buffer. `ndt` is mutated (regularization pose, then align); the caller owns it
+  // and is expected to hold its lock across this call.
   [[nodiscard]] Result scan_match(
-    const ScanInput & input, NdtType & ndt, MapUpdateModule & map_update);
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr & scan,
+    const builtin_interfaces::msg::Time & now, const TransformLookup & base_from_sensor,
+    NdtType & ndt, MapUpdateModule & map_update);
 
   // Subscribed poses, and the state kept between callbacks. Each reports what it recorded about
   // the message it was given, as everything else here does.
@@ -253,18 +249,21 @@ private:
   // Phase one: the checks that need only the message and the transform. Empty when one of them
   // rejects the scan; the scan in base frame otherwise.
   [[nodiscard]] std::optional<CloudPtr> prepare_scan(
-    const ScanInput & input, DiagnosticsReport & report) const;
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr & scan,
+    const builtin_interfaces::msg::Time & now, const TransformLookup & base_from_sensor,
+    DiagnosticsReport & report) const;
 
   // Phase two: the gates that need the NDT and the interpolated pose, the alignment itself, and
   // the judgement of its result. Empty when a gate rejects it.
   [[nodiscard]] std::optional<Alignment> align_and_judge(
-    const ScanInput & input, NdtType & ndt, MapUpdateModule & map_update,
-    const CloudPtr & sensor_points_in_baselink_frame, DiagnosticsReport & report);
+    const builtin_interfaces::msg::Time & sensor_ros_time, NdtType & ndt,
+    MapUpdateModule & map_update, const CloudPtr & sensor_points_in_baselink_frame,
+    DiagnosticsReport & report);
 
   // Phase three: the covariance, the last two keys, and everything the caller publishes.
   [[nodiscard]] ScanMatchingOutput build_output(
-    const ScanInput & input, NdtType & ndt, const Alignment & alignment,
-    const CloudPtr & sensor_points_in_baselink_frame,
+    const builtin_interfaces::msg::Time & sensor_ros_time, NdtType & ndt,
+    const Alignment & alignment, const CloudPtr & sensor_points_in_baselink_frame,
     const std::chrono::system_clock::time_point & exe_start_time, DiagnosticsReport & report);
 
   struct CovarianceEstimate

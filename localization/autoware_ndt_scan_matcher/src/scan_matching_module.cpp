@@ -101,14 +101,17 @@ std::optional<geometry_msgs::msg::Point> ScanMatchingModule::latest_ekf_position
 }
 
 ScanMatchingModule::Result ScanMatchingModule::scan_match(
-  const ScanInput & input, NdtType & ndt, MapUpdateModule & map_update)
+  const sensor_msgs::msg::PointCloud2::ConstSharedPtr & scan,
+  const builtin_interfaces::msg::Time & now, const TransformLookup & base_from_sensor,
+  NdtType & ndt, MapUpdateModule & map_update)
 {
   const auto exe_start_time = std::chrono::system_clock::now();
 
   Result result;
   DiagnosticsReport & report = result.diagnostics;
 
-  const std::optional<CloudPtr> scan_in_baselink_frame = prepare_scan(input, report);
+  const std::optional<CloudPtr> scan_in_baselink_frame =
+    prepare_scan(scan, now, base_from_sensor, report);
   if (!scan_in_baselink_frame) {
     return result;
   }
@@ -119,21 +122,23 @@ ScanMatchingModule::Result ScanMatchingModule::scan_match(
   // The caller holds the NDT's lock around this whole call, so what follows runs as one critical
   // section without taking one of its own.
   const std::optional<Alignment> alignment =
-    align_and_judge(input, ndt, map_update, *scan_in_baselink_frame, report);
+    align_and_judge(scan->header.stamp, ndt, map_update, *scan_in_baselink_frame, report);
   if (!alignment) {
     return result;
   }
 
-  result.output =
-    build_output(input, ndt, *alignment, *scan_in_baselink_frame, exe_start_time, report);
+  result.output = build_output(
+    scan->header.stamp, ndt, *alignment, *scan_in_baselink_frame, exe_start_time, report);
   result.converged = alignment->is_converged;
   return result;
 }
 
 std::optional<ScanMatchingModule::CloudPtr> ScanMatchingModule::prepare_scan(
-  const ScanInput & input, DiagnosticsReport & report) const
+  const sensor_msgs::msg::PointCloud2::ConstSharedPtr & scan,
+  const builtin_interfaces::msg::Time & now, const TransformLookup & base_from_sensor,
+  DiagnosticsReport & report) const
 {
-  const auto & sensor_points_msg_in_sensor_frame = input.scan;
+  const auto & sensor_points_msg_in_sensor_frame = scan;
 
   // check topic_time_stamp
   const builtin_interfaces::msg::Time sensor_ros_time =
@@ -152,7 +157,7 @@ std::optional<ScanMatchingModule::CloudPtr> ScanMatchingModule::prepare_scan(
 
   // check sensor_points_delay_time_sec
   const double sensor_points_delay_time_sec =
-    to_seconds(to_nanoseconds(input.now) - to_nanoseconds(sensor_ros_time));
+    to_seconds(to_nanoseconds(now) - to_nanoseconds(sensor_ros_time));
   report.add_key_value({"sensor_points_delay_time_sec", sensor_points_delay_time_sec});
   if (sensor_points_delay_time_sec > param_.sensor_points.timeout_sec) {
     std::stringstream message;
@@ -179,9 +184,9 @@ std::optional<ScanMatchingModule::CloudPtr> ScanMatchingModule::prepare_scan(
   pcl::fromROSMsg(*sensor_points_msg_in_sensor_frame, *sensor_points_in_sensor_frame);
 
   // transform sensor points from sensor-frame to base_link
-  if (!input.base_from_sensor.transform) {
+  if (!base_from_sensor.transform) {
     std::stringstream message;
-    message << input.base_from_sensor.error << ". Please publish TF " << sensor_frame << " to "
+    message << base_from_sensor.error << ". Please publish TF " << sensor_frame << " to "
             << param_.frame.base_frame;
     report.update_level_and_message(DiagnosticLevel::ERROR, message.str());
     report.logs.push_back({LogSite::ScanTransformFailed, message.str()});
@@ -195,8 +200,7 @@ std::optional<ScanMatchingModule::CloudPtr> ScanMatchingModule::prepare_scan(
   } else {
     autoware_utils_pcl::transform_pointcloud(
       *sensor_points_in_sensor_frame, *sensor_points_in_baselink_frame,
-      pose_to_matrix4f(
-        autoware_utils_geometry::transform2pose(*input.base_from_sensor.transform).pose));
+      pose_to_matrix4f(autoware_utils_geometry::transform2pose(*base_from_sensor.transform).pose));
   }
   report.add_key_value({"is_succeed_transform_sensor_points", true});
 
@@ -221,11 +225,11 @@ std::optional<ScanMatchingModule::CloudPtr> ScanMatchingModule::prepare_scan(
 }
 
 std::optional<ScanMatchingModule::Alignment> ScanMatchingModule::align_and_judge(
-  const ScanInput & input, NdtType & ndt, MapUpdateModule & map_update,
-  const CloudPtr & sensor_points_in_baselink_frame, DiagnosticsReport & report)
+  const builtin_interfaces::msg::Time & sensor_ros_time, NdtType & ndt,
+  MapUpdateModule & map_update, const CloudPtr & sensor_points_in_baselink_frame,
+  DiagnosticsReport & report)
 {
   auto * const ndt_ptr = &ndt;
-  const builtin_interfaces::msg::Time sensor_ros_time = input.scan->header.stamp;
 
   if (!report.check("is_activated", activated_, DiagnosticLevel::WARN, "Node is not activated.")) {
     return std::nullopt;
@@ -380,7 +384,7 @@ std::optional<ScanMatchingModule::Alignment> ScanMatchingModule::align_and_judge
 }
 
 ScanMatchingModule::ScanMatchingOutput ScanMatchingModule::build_output(
-  const ScanInput & input, NdtType & ndt, const Alignment & alignment,
+  const builtin_interfaces::msg::Time & sensor_ros_time, NdtType & ndt, const Alignment & alignment,
   const CloudPtr & sensor_points_in_baselink_frame,
   const std::chrono::system_clock::time_point & exe_start_time, DiagnosticsReport & report)
 {
@@ -391,7 +395,6 @@ ScanMatchingModule::ScanMatchingOutput ScanMatchingModule::build_output(
   const auto & interpolation_result = alignment.interpolation;
   const auto & initial_pose_matrix = alignment.initial_pose_matrix;
   const bool is_converged = alignment.is_converged;
-  const builtin_interfaces::msg::Time sensor_ros_time = input.scan->header.stamp;
   // covariance estimation
   CovarianceEstimate covariance_debug;
   const Eigen::Quaterniond map_to_base_link_quat = Eigen::Quaterniond(
