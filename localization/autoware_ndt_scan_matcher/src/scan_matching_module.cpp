@@ -41,8 +41,9 @@ using autoware::localization_util::exchange_color_crc;
 using autoware::localization_util::matrix4f_to_pose;
 using autoware::localization_util::pose_to_matrix4f;
 
-ScanMatchingModule::ScanMatchingModule(Params param)
+ScanMatchingModule::ScanMatchingModule(Params param, const std::atomic<bool> & activated)
 : param_(std::move(param)),
+  activated_(activated),
   initial_pose_buffer_(
     param_.validation.initial_pose_timeout_sec, param_.validation.initial_pose_distance_tolerance_m)
 {
@@ -56,13 +57,12 @@ ScanMatchingModule::ScanMatchingModule(Params param)
 }
 
 DiagnosticsReport ScanMatchingModule::push_initial_pose(
-  const PoseWithCovarianceStamped::ConstSharedPtr & pose, const bool is_activated)
+  const PoseWithCovarianceStamped::ConstSharedPtr & pose)
 {
   DiagnosticsReport report;
   report.add_key_value({"topic_time_stamp", to_nanoseconds(pose->header.stamp)});
 
-  if (!report.check(
-        "is_activated", is_activated, DiagnosticLevel::WARN, "Node is not activated.")) {
+  if (!report.check("is_activated", activated_, DiagnosticLevel::WARN, "Node is not activated.")) {
     return report;
   }
 
@@ -227,8 +227,7 @@ std::optional<ScanMatchingModule::Alignment> ScanMatchingModule::align_and_judge
   auto * const ndt_ptr = &ndt;
   const builtin_interfaces::msg::Time sensor_ros_time = input.scan->header.stamp;
 
-  if (!report.check(
-        "is_activated", input.is_activated, DiagnosticLevel::WARN, "Node is not activated.")) {
+  if (!report.check("is_activated", activated_, DiagnosticLevel::WARN, "Node is not activated.")) {
     return std::nullopt;
   }
 

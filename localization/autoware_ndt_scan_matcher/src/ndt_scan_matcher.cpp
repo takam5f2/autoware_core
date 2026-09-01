@@ -38,7 +38,7 @@ NdtScanMatcher::NdtScanMatcher(Params param, MapUpdateModule::PcdLoaderFunction 
 : param_(std::move(param)),
   ndt_ptr_(make_ndt(param_.ndt)),
   map_update_(ndt_ptr_, param_.map_update, std::move(pcd_loader)),
-  scan_matching_(param_.scan_matching)
+  scan_matching_(param_.scan_matching, activated_)
 {
 }
 
@@ -59,11 +59,9 @@ NdtScanMatcher::ScanResult NdtScanMatcher::match_scan(const ScanInput & input)
   result.output = std::move(match.output);
   result.diagnostics = std::move(match.diagnostics);
 
-  // `input.is_activated` rather than a fresh read: the node's trigger service and its scan
-  // callback share one MutuallyExclusive callback group, so it cannot have changed since the
-  // caller filled the input.
-  skipping_publish_num_ =
-    ((match.converged || !input.is_activated) ? 0 : (skipping_publish_num_ + 1));
+  // Not counted while deactivated: nothing was going to be published then anyway, and counting
+  // would raise the warning below throughout every startup.
+  skipping_publish_num_ = ((match.converged || !activated_) ? 0 : (skipping_publish_num_ + 1));
   result.diagnostics.add_key_value({"skipping_publish_num", skipping_publish_num_});
   if (skipping_publish_num_ >= param_.skipping_publish_num) {
     std::stringstream message;
@@ -76,6 +74,12 @@ NdtScanMatcher::ScanResult NdtScanMatcher::match_scan(const ScanInput & input)
 MapUpdateModule::UpdateResult NdtScanMatcher::update_map_periodically()
 {
   MapUpdateModule::UpdateResult result;
+
+  // check is_activated
+  if (!result.diagnostics.check(
+        "is_activated", activated_, DiagnosticLevel::WARN, "Node is not activated.")) {
+    return result;
+  }
 
   // check is_set_last_update_position
   const auto position = scan_matching_.latest_ekf_position();
@@ -124,9 +128,9 @@ NdtScanMatcher::AlignResult NdtScanMatcher::align(const AlignInput & input)
 }
 
 DiagnosticsReport NdtScanMatcher::push_initial_pose(
-  const PoseWithCovarianceStamped::ConstSharedPtr & pose, const bool is_activated)
+  const PoseWithCovarianceStamped::ConstSharedPtr & pose)
 {
-  return scan_matching_.push_initial_pose(pose, is_activated);
+  return scan_matching_.push_initial_pose(pose);
 }
 
 DiagnosticsReport NdtScanMatcher::push_regularization_pose(
@@ -135,9 +139,12 @@ DiagnosticsReport NdtScanMatcher::push_regularization_pose(
   return scan_matching_.push_regularization_pose(pose);
 }
 
-void NdtScanMatcher::clear_initial_pose_buffer()
+void NdtScanMatcher::set_activated(const bool activated)
 {
-  scan_matching_.clear_initial_pose_buffer();
+  activated_ = activated;
+  if (activated) {
+    scan_matching_.clear_initial_pose_buffer();
+  }
 }
 
 }  // namespace autoware::ndt_scan_matcher

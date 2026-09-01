@@ -35,6 +35,7 @@
 #include <pcl/point_types.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -143,7 +144,6 @@ public:
     sensor_msgs::msg::PointCloud2::ConstSharedPtr scan;  // in the sensor frame
     // `now()` at the callback's start, for the delay check. This module reads no clock.
     builtin_interfaces::msg::Time now;
-    bool is_activated{};
     // sensor frame -> base frame, looked up by the node.
     TransformLookup base_from_sensor;
     // Whether anyone subscribes to `voxel_score_points`. Colouring every point by its score is
@@ -213,7 +213,10 @@ public:
     bool converged{};
   };
 
-  explicit ScanMatchingModule(Params param);
+  // `activated` is the matcher's lifecycle flag, owned by NdtScanMatcher and borrowed here the
+  // way MapUpdateModule borrows the NDT: both gates below ask the same question of it, and neither
+  // wants it threaded through a call that is about a scan.
+  ScanMatchingModule(Params param, const std::atomic<bool> & activated);
 
   // `ndt` is mutated (regularization pose, then align). The caller owns it and is expected to
   // hold its lock across this call. `map_update` is asked what the loaded map covers, which is
@@ -224,7 +227,7 @@ public:
   // Subscribed poses, and the state kept between callbacks. Each reports what it recorded about
   // the message it was given, as everything else here does.
   [[nodiscard]] DiagnosticsReport push_initial_pose(
-    const PoseWithCovarianceStamped::ConstSharedPtr & pose, bool is_activated);
+    const PoseWithCovarianceStamped::ConstSharedPtr & pose);
   [[nodiscard]] DiagnosticsReport push_regularization_pose(
     const PoseWithCovarianceStamped::ConstSharedPtr & pose);
   void clear_initial_pose_buffer();
@@ -311,6 +314,7 @@ private:
     const pcl::shared_ptr<pcl::PointCloud<pcl::PointXYZRGB>> & points_in_map) const;
 
   Params param_;
+  const std::atomic<bool> & activated_;
 
   PoseInterpolationBuffer initial_pose_buffer_;
   // Only created when param_.ndt_regularization_enable is set.

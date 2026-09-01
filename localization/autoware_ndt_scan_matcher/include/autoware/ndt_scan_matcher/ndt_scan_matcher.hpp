@@ -31,6 +31,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -88,9 +89,9 @@ public:
   };
   [[nodiscard]] ScanResult match_scan(const ScanInput & input);
 
-  // The periodic map update. Reports `is_set_last_update_position` and touches nothing else when
-  // no initial pose has arrived yet. Whether the node is activated is the node's own gate, and
-  // stays there.
+  // The periodic map update. Reports `is_activated` and `is_set_last_update_position`, and touches
+  // nothing else until the trigger service has activated the matcher and an initial pose has
+  // arrived.
   [[nodiscard]] MapUpdateModule::UpdateResult update_map_periodically();
 
   // `ndt_align_srv`.
@@ -117,13 +118,20 @@ public:
 
   // `ekf_pose_with_covariance`, `regularization_pose_with_covariance`, `trigger_node_srv`.
   [[nodiscard]] DiagnosticsReport push_initial_pose(
-    const PoseWithCovarianceStamped::ConstSharedPtr & pose, bool is_activated);
+    const PoseWithCovarianceStamped::ConstSharedPtr & pose);
   [[nodiscard]] DiagnosticsReport push_regularization_pose(
     const PoseWithCovarianceStamped::ConstSharedPtr & pose);
-  void clear_initial_pose_buffer();
+  // Whether the matcher should be producing output at all. Activating discards the buffered
+  // initial poses: the ones from before the gap are not to be interpolated across it.
+  void set_activated(bool activated);
 
 private:
   Params param_;
+
+  // Set by the trigger service, read from three of the node's callback groups -- hence atomic
+  // rather than Guarded, which would serialise readers for nothing. ScanMatchingModule holds a
+  // reference to it; declared before it for that reason.
+  std::atomic<bool> activated_{false};
 
   // Declared before map_update_, which takes it by reference, and after param_, whose `ndt` field
   // is applied to it on construction -- MapUpdateModule copies the map on the way in.

@@ -175,7 +175,6 @@ private:
 
   rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
 
-  std::atomic<bool> is_activated_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_scan_points_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_initial_pose_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_regularization_pose_;

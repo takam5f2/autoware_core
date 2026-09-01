@@ -76,7 +76,6 @@ NdtScanMatcherNode::NdtScanMatcherNode(const rclcpp::NodeOptions & options)
   tf2_broadcaster_(*this),
   tf2_buffer_(this->get_clock()),
   tf2_listener_(tf2_buffer_),
-  is_activated_(false),
   param_(this)
 {
   timer_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -297,15 +296,6 @@ void NdtScanMatcherNode::callback_timer()
 
   diagnostics_map_update_->add_key_value("timer_callback_time_stamp", ros_time_now.nanoseconds());
 
-  // check is_activated
-  diagnostics_map_update_->add_key_value("is_activated", static_cast<bool>(is_activated_));
-  if (!is_activated_) {
-    diagnostics_map_update_->update_level_and_message(
-      diagnostic_msgs::msg::DiagnosticStatus::WARN, "Node is not activated.");
-    diagnostics_map_update_->publish(ros_time_now);
-    return;
-  }
-
   auto result = matcher_->update_map_periodically();
   apply_diagnostics_update(*diagnostics_map_update_, result.diagnostics);
 
@@ -318,7 +308,7 @@ void NdtScanMatcherNode::callback_initial_pose(
 {
   diagnostics_initial_pose_->clear();
 
-  const auto report = matcher_->push_initial_pose(initial_pose_msg_ptr, is_activated_);
+  const auto report = matcher_->push_initial_pose(initial_pose_msg_ptr);
   replay_logs(report.logs);
   apply_diagnostics_update(*diagnostics_initial_pose_, report);
 
@@ -349,7 +339,6 @@ void NdtScanMatcherNode::callback_sensor_points(
   NdtScanMatcher::ScanInput input;
   input.scan = sensor_points_msg_in_sensor_frame;
   input.now = this->now();
-  input.is_activated = is_activated_;
   input.base_from_sensor =
     lookup_base_from_sensor(sensor_points_msg_in_sensor_frame->header.frame_id);
   input.voxel_score_points_wanted = voxel_score_points_pub_->get_subscription_count() > 0;
@@ -444,13 +433,10 @@ void NdtScanMatcherNode::service_trigger_node(
   diagnostics_trigger_node_->clear();
   diagnostics_trigger_node_->add_key_value("service_call_time_stamp", ros_time_now.nanoseconds());
 
-  is_activated_ = req->data;
-  if (is_activated_) {
-    matcher_->clear_initial_pose_buffer();
-  }
+  matcher_->set_activated(req->data);
   res->success = true;
 
-  diagnostics_trigger_node_->add_key_value("is_activated", static_cast<bool>(is_activated_));
+  diagnostics_trigger_node_->add_key_value("is_activated", req->data);
   diagnostics_trigger_node_->add_key_value("is_succeed_service", res->success);
   diagnostics_trigger_node_->publish(ros_time_now);
 }
