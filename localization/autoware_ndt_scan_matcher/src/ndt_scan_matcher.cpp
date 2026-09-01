@@ -123,17 +123,16 @@ NdtScanMatcher::AlignResult NdtScanMatcher::align(const AlignInput & input)
   return result;
 }
 
-void NdtScanMatcher::push_initial_pose(
-  const PoseWithCovarianceStamped::ConstSharedPtr & pose, const bool is_activated,
-  DiagnosticsReport & report)
+DiagnosticsReport NdtScanMatcher::push_initial_pose(
+  const PoseWithCovarianceStamped::ConstSharedPtr & pose, const bool is_activated)
 {
-  scan_matching_.push_initial_pose(pose, is_activated, report);
+  return scan_matching_.push_initial_pose(pose, is_activated);
 }
 
-void NdtScanMatcher::push_regularization_pose(
+DiagnosticsReport NdtScanMatcher::push_regularization_pose(
   const PoseWithCovarianceStamped::ConstSharedPtr & pose)
 {
-  scan_matching_.push_regularization_pose(pose);
+  return scan_matching_.push_regularization_pose(pose);
 }
 
 void NdtScanMatcher::clear_initial_pose_buffer()

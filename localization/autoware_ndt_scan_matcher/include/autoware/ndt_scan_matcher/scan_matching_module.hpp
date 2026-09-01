@@ -221,11 +221,12 @@ public:
   [[nodiscard]] Result scan_match(
     const ScanInput & input, NdtType & ndt, MapUpdateModule & map_update);
 
-  // Subscribed poses, and the state kept between callbacks.
-  void push_initial_pose(
-    const PoseWithCovarianceStamped::ConstSharedPtr & pose, bool is_activated,
-    DiagnosticsReport & report);
-  void push_regularization_pose(const PoseWithCovarianceStamped::ConstSharedPtr & pose);
+  // Subscribed poses, and the state kept between callbacks. Each reports what it recorded about
+  // the message it was given, as everything else here does.
+  [[nodiscard]] DiagnosticsReport push_initial_pose(
+    const PoseWithCovarianceStamped::ConstSharedPtr & pose, bool is_activated);
+  [[nodiscard]] DiagnosticsReport push_regularization_pose(
+    const PoseWithCovarianceStamped::ConstSharedPtr & pose);
   void clear_initial_pose_buffer();
   // Where the map update timer measures from. Not const: reading the guarded value takes its lock.
   [[nodiscard]] std::optional<geometry_msgs::msg::Point> latest_ekf_position();

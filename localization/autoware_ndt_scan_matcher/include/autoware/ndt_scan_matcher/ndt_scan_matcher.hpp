@@ -116,10 +116,10 @@ public:
   [[nodiscard]] AlignResult align(const AlignInput & input);
 
   // `ekf_pose_with_covariance`, `regularization_pose_with_covariance`, `trigger_node_srv`.
-  void push_initial_pose(
-    const PoseWithCovarianceStamped::ConstSharedPtr & pose, bool is_activated,
-    DiagnosticsReport & report);
-  void push_regularization_pose(const PoseWithCovarianceStamped::ConstSharedPtr & pose);
+  [[nodiscard]] DiagnosticsReport push_initial_pose(
+    const PoseWithCovarianceStamped::ConstSharedPtr & pose, bool is_activated);
+  [[nodiscard]] DiagnosticsReport push_regularization_pose(
+    const PoseWithCovarianceStamped::ConstSharedPtr & pose);
   void clear_initial_pose_buffer();
 
 private:

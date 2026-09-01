@@ -356,8 +356,7 @@ void NdtScanMatcherNode::callback_initial_pose(
 {
   diagnostics_initial_pose_->clear();
 
-  DiagnosticsReport report;
-  matcher_->push_initial_pose(initial_pose_msg_ptr, is_activated_, report);
+  const auto report = matcher_->push_initial_pose(initial_pose_msg_ptr, is_activated_);
   replay_logs(report.logs);
   apply_diagnostics_update(*diagnostics_initial_pose_, report);
 
@@ -369,10 +368,9 @@ void NdtScanMatcherNode::callback_regularization_pose(
 {
   diagnostics_regularization_pose_->clear();
 
-  diagnostics_regularization_pose_->add_key_value(
-    "topic_time_stamp", static_cast<rclcpp::Time>(pose_conv_msg_ptr->header.stamp).nanoseconds());
-
-  matcher_->push_regularization_pose(pose_conv_msg_ptr);
+  const auto report = matcher_->push_regularization_pose(pose_conv_msg_ptr);
+  replay_logs(report.logs);
+  apply_diagnostics_update(*diagnostics_regularization_pose_, report);
 
   diagnostics_regularization_pose_->publish(pose_conv_msg_ptr->header.stamp);
 }

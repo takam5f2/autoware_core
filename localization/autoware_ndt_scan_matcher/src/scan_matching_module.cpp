@@ -55,15 +55,15 @@ ScanMatchingModule::ScanMatchingModule(Params param)
   }
 }
 
-void ScanMatchingModule::push_initial_pose(
-  const PoseWithCovarianceStamped::ConstSharedPtr & pose, const bool is_activated,
-  DiagnosticsReport & report)
+DiagnosticsReport ScanMatchingModule::push_initial_pose(
+  const PoseWithCovarianceStamped::ConstSharedPtr & pose, const bool is_activated)
 {
+  DiagnosticsReport report;
   report.add_key_value({"topic_time_stamp", to_nanoseconds(pose->header.stamp)});
 
   if (!report.check(
         "is_activated", is_activated, DiagnosticLevel::WARN, "Node is not activated.")) {
-    return;
+    return report;
   }
 
   std::stringstream message;
@@ -73,17 +73,21 @@ void ScanMatchingModule::push_initial_pose(
   if (!report.check(
         "is_expected_frame_id", pose->header.frame_id == param_.frame.map_frame,
         DiagnosticLevel::ERROR, message.str())) {
-    return;
+    return report;
   }
 
   initial_pose_buffer_.push_back(pose);
   latest_ekf_position_.with([&](auto & position) { position = pose->pose.pose.position; });
+  return report;
 }
 
-void ScanMatchingModule::push_regularization_pose(
+DiagnosticsReport ScanMatchingModule::push_regularization_pose(
   const PoseWithCovarianceStamped::ConstSharedPtr & pose)
 {
+  DiagnosticsReport report;
+  report.add_key_value({"topic_time_stamp", to_nanoseconds(pose->header.stamp)});
   regularization_pose_buffer_->push_back(pose);
+  return report;
 }
 
 void ScanMatchingModule::clear_initial_pose_buffer()

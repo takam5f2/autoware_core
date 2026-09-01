@@ -315,8 +315,8 @@ TEST_F(NdtScanMatcherCoreTest, MapUpdateWaitsForAReferencePosition)  // NOLINT
   auto pose = std::make_shared<geometry_msgs::msg::PoseWithCovarianceStamped>(
     make_pose(map_center_x, map_center_y));
   pose->header.stamp = make_time(10);
-  DiagnosticsReport push_report;
-  matcher_->push_initial_pose(pose, true, push_report);
+  const auto push_report = matcher_->push_initial_pose(pose, true);
+  ASSERT_EQ(level_of(push_report), 0) << "the pose was rejected: " << push_report.message;
 
   const auto after = matcher_->update_map_periodically();
 
