@@ -771,10 +771,12 @@ TEST(NdtScanMatcherCharacteristics, ConvergedScanPublishesTheseTopicsAndNotThose
     harness->capture<Float32Stamped>("/no_ground_nearest_voxel_transformation_likelihood");
   auto multi_ndt_pose = harness->capture<geometry_msgs::msg::PoseArray>("/multi_ndt_pose");
   auto multi_initial_pose = harness->capture<geometry_msgs::msg::PoseArray>("/multi_initial_pose");
+  auto voxel_score_points = harness->capture<sensor_msgs::msg::PointCloud2>("/voxel_score_points");
 
   // They must also have matched a publisher, or the absence assertions are about discovery.
   ASSERT_TRUE(wait_for_capture_discovery(
-    *harness, no_ground_points, no_ground_tp, no_ground_nvtl, multi_ndt_pose, multi_initial_pose));
+    *harness, no_ground_points, no_ground_tp, no_ground_nvtl, multi_ndt_pose, multi_initial_pose,
+    voxel_score_points));
 
   ASSERT_TRUE(harness->ensure_map_loaded());
 
@@ -837,6 +839,49 @@ TEST(NdtScanMatcherCharacteristics, ConvergedScanPublishesTheseTopicsAndNotThose
   EXPECT_EQ(no_ground_nvtl->count(), 0U);
   EXPECT_EQ(multi_ndt_pose->count(), 0U);
   EXPECT_EQ(multi_initial_pose->count(), 0U);
+  EXPECT_EQ(voxel_score_points->count(), 0U);
+}
+
+/// `voxel_score_points` follows `score_estimation.publish_voxel_score_points`, and nothing else.
+///
+/// The other arm of the absence assertion above. What this pins is that the topic is decided by
+/// the parameter rather than by who is listening: this case and that one differ in the parameter
+/// alone, and both subscribe.
+TEST(NdtScanMatcherCharacteristics, VoxelScorePointsFollowItsParameter)
+{
+  // Arrange
+  auto overrides = converged_hot_path_overrides();
+  overrides.emplace_back("score_estimation.publish_voxel_score_points", true);
+  auto harness = make_ready_harness(std::move(overrides));
+
+  auto voxel_score_points = harness->capture<sensor_msgs::msg::PointCloud2>("/voxel_score_points");
+  auto points_aligned = harness->capture<sensor_msgs::msg::PointCloud2>("/points_aligned");
+  ASSERT_TRUE(wait_for_capture_discovery(*harness, voxel_score_points, points_aligned));
+
+  ASSERT_TRUE(harness->ensure_map_loaded());
+
+  // Act
+  ScanDrive drive;
+  drive.initial_pose = InitialPoseSpec{};
+
+  const auto outcome = harness->drive_one_scan(drive);
+
+  // Assert
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_EQ(outcome->diag.level(), level_ok)
+    << "scan did not converge: " << outcome->diag.message();
+
+  ASSERT_TRUE(harness->wait_until(
+    [&] { return voxel_score_points->count() >= 1 && points_aligned->count() >= 1; }, 5s));
+  EXPECT_EQ(voxel_score_points->count(), 1U) << "scan drive attempt was " << outcome->attempt;
+
+  // One coloured point per scan point: the cloud is the scan, not a summary of it.
+  const auto scored = voxel_score_points->first();
+  const auto aligned = points_aligned->first();
+  ASSERT_TRUE(scored.has_value());
+  ASSERT_TRUE(aligned.has_value());
+  EXPECT_EQ(scored->width, aligned->width);
+  EXPECT_EQ(scored->header.frame_id, map_frame);
 }
 
 /// SUSPICIOUS — a non-converged scan suppresses the pose but still broadcasts the TF.

@@ -341,7 +341,6 @@ void NdtScanMatcherNode::callback_sensor_points(
   input.now = this->now();
   input.base_from_sensor =
     lookup_base_from_sensor(sensor_points_msg_in_sensor_frame->header.frame_id);
-  input.voxel_score_points_wanted = voxel_score_points_pub_->get_subscription_count() > 0;
 
   auto match = matcher_->match_scan(input);
   replay_logs(match.diagnostics.logs);

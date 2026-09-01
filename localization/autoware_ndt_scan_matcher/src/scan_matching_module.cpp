@@ -481,7 +481,7 @@ ScanMatchingModule::ScanMatchingOutput ScanMatchingModule::build_output(
   // check each of point score
   const float lower_nvs = 1.0f;
   const float upper_nvs = 3.5f;
-  if (input.voxel_score_points_wanted) {
+  if (param_.score_estimation.publish_voxel_score_points) {
     output.voxel_score_points = make_point_cloud(
       sensor_ros_time, param_.frame.map_frame,
       colorize_point_score(sensor_points_in_map_ptr, lower_nvs, upper_nvs, *ndt_ptr));

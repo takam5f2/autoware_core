@@ -108,6 +108,11 @@ public:
       ConvergedParamType converged_param_type{};
       double converged_param_transform_probability{};
       double converged_param_nearest_voxel_transformation_likelihood{};
+      // Whether to colour every scan point by its nearest-voxel score. That is a pass over the
+      // scan on top of the alignment, so it is a parameter rather than something derived from who
+      // happens to be subscribed: what a scan costs should not change because someone opened a
+      // viewer.
+      bool publish_voxel_score_points{};
       struct NoGroundPoints
       {
         bool enable{};
@@ -146,9 +151,6 @@ public:
     builtin_interfaces::msg::Time now;
     // sensor frame -> base frame, looked up by the node.
     TransformLookup base_from_sensor;
-    // Whether anyone subscribes to `voxel_score_points`. Colouring every point by its score is
-    // expensive, so it is only done when someone is listening.
-    bool voxel_score_points_wanted{};
   };
 
   // Everything one scan match produces for the outside world, assembled while the NDT lock is

@@ -173,6 +173,7 @@ protected:
       ConvergedParamType::NEAREST_VOXEL_TRANSFORMATION_LIKELIHOOD;
     scan_matching.score_estimation.converged_param_transform_probability = 3.0;
     scan_matching.score_estimation.converged_param_nearest_voxel_transformation_likelihood = 2.3;
+    scan_matching.score_estimation.publish_voxel_score_points = false;
     scan_matching.score_estimation.no_ground_points.enable = false;
     scan_matching.score_estimation.no_ground_points.z_margin_for_ground_removal = 0.8;
     scan_matching.covariance.output_pose_covariance = {
@@ -208,7 +209,6 @@ protected:
       std::make_shared<sensor_msgs::msg::PointCloud2>(make_scan_msg(make_time(sec), "base_link"));
     input.now = make_time(sec);
     input.base_from_sensor.transform = geometry_msgs::msg::TransformStamped();
-    input.voxel_score_points_wanted = false;
     return input;
   }
 
