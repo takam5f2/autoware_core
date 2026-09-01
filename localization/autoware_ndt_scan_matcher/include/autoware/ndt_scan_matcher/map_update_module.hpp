@@ -35,10 +35,6 @@
 namespace autoware::ndt_scan_matcher
 {
 
-// Declared a friend of MapUpdateModule so unit tests can drive its otherwise-private map-update
-// entry points (see test/test_map_update_module.cpp).
-class MapUpdateModuleTest;
-
 class MapUpdateModule
 {
 public:
@@ -80,17 +76,22 @@ public:
     std::optional<sensor_msgs::msg::PointCloud2> loaded_pcd_map;
   };
 
-public:
   MapUpdateModule(Guarded<NdtPtrType> & ndt_ptr, Params param, PcdLoaderFunction pcd_loader);
 
   bool out_of_map_range(const geometry_msgs::msg::Point & position);
 
+  // The two ways the map gets reloaded, and the difference between them.
+  //
+  // `update_map_if_moved` does nothing until the vehicle has travelled `update_distance` since the
+  // last successful load, and latches a rebuild when the loaded map no longer covers the sensor.
+  // `update_map` loads unconditionally, which is what an initial-pose search needs: it has no
+  // previous position to measure from.
+  //
+  // Do not call either while holding the lock for the NDT passed to the constructor: both take it.
+  UpdateResult update_map_if_moved(const geometry_msgs::msg::Point & position);
+  UpdateResult update_map(const geometry_msgs::msg::Point & position);
+
 private:
-  friend class NdtScanMatcher;
-  friend class MapUpdateModuleTest;
-
-  UpdateResult callback_timer(const geometry_msgs::msg::Point & position);
-
   // Distance from the last successful map-update position, or std::nullopt if there is none yet.
   std::optional<double> distance_from_last_update(const geometry_msgs::msg::Point & position);
 
@@ -109,8 +110,6 @@ private:
     BuilderState & builder_state, const geometry_msgs::msg::Point & position,
     DiagnosticsReport & diagnostics);
 
-  // Do not call this function while holding the lock for ndt_ptr_.
-  UpdateResult update_map(const geometry_msgs::msg::Point & position);
   // Update the specified NDT
   bool update_ndt(
     const geometry_msgs::msg::Point & position, NdtType & ndt, DiagnosticsReport & diagnostics);

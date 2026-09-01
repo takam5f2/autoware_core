@@ -96,7 +96,7 @@ MapUpdateModule::UpdateResult NdtScanMatcher::update_map_periodically()
     return result;
   }
 
-  auto update = map_update_.callback_timer(*position);
+  auto update = map_update_.update_map_if_moved(*position);
   result.map_updated = update.map_updated;
   result.loaded_pcd_map = std::move(update.loaded_pcd_map);
   result.diagnostics.append(std::move(update.diagnostics));

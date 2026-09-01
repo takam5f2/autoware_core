@@ -90,18 +90,6 @@ protected:
     param_.publish_loaded_map = false;
   }
 
-  // Accessors for the private entry points. This fixture is a friend of MapUpdateModule, so these
-  // members may reach its private methods; the TEST_F bodies call them through the fixture.
-  static MapUpdateModule::UpdateResult update_map(
-    MapUpdateModule & module, const geometry_msgs::msg::Point & position)
-  {
-    return module.update_map(position);
-  }
-  static MapUpdateModule::UpdateResult callback_timer(
-    MapUpdateModule & module, const geometry_msgs::msg::Point & position)
-  {
-    return module.callback_timer(position);
-  }
   static bool ndt_has_target(Guarded<MapUpdateModule::NdtPtrType> & ndt_ptr)
   {
     return ndt_ptr.with([](const auto & ndt) { return ndt->hasTarget(); });
@@ -116,7 +104,7 @@ TEST_F(MapUpdateModuleTest, FirstUpdateRebuildsAndLoadsMap)  // NOLINT
 {
   MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update_map(make_point(0.0, 0.0));
 
   EXPECT_TRUE(result.map_updated);
   EXPECT_TRUE(ndt_has_target(ndt_ptr_));
@@ -130,20 +118,20 @@ TEST_F(MapUpdateModuleTest, OutOfMapRangeTracksLastUpdate)  // NOLINT
 
   EXPECT_TRUE(module.out_of_map_range(make_point(0.0, 0.0)));  // nothing loaded yet
 
-  ASSERT_TRUE(update_map(module, make_point(0.0, 0.0)).map_updated);
+  ASSERT_TRUE(module.update_map(make_point(0.0, 0.0)).map_updated);
 
   EXPECT_FALSE(module.out_of_map_range(make_point(0.0, 0.0)));   // at the last update position
   EXPECT_TRUE(module.out_of_map_range(make_point(100.0, 0.0)));  // 100 + 5 > 30
 }
 
-// callback_timer skips the update when the vehicle has not moved farther than update_distance.
-TEST_F(MapUpdateModuleTest, CallbackTimerSkipsWhenNotMovedFarEnough)  // NOLINT
+// update_map_if_moved skips the update when the vehicle has not moved farther than update_distance.
+TEST_F(MapUpdateModuleTest, UpdateIfMovedSkipsWhenNotMovedFarEnough)  // NOLINT
 {
   MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
-  ASSERT_TRUE(update_map(module, make_point(0.0, 0.0)).map_updated);
+  ASSERT_TRUE(module.update_map(make_point(0.0, 0.0)).map_updated);
 
   // Moved 1 m < update_distance (5 m) -> no update.
-  const auto result = callback_timer(module, make_point(1.0, 0.0));
+  const auto result = module.update_map_if_moved(make_point(1.0, 0.0));
   EXPECT_FALSE(result.map_updated);
 }
 
@@ -152,7 +140,7 @@ TEST_F(MapUpdateModuleTest, LoaderFailureReportsError)  // NOLINT
 {
   MapUpdateModule module(ndt_ptr_, param_, make_failing_loader());
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update_map(make_point(0.0, 0.0));
 
   EXPECT_FALSE(result.map_updated);
   EXPECT_EQ(result.diagnostics.level, DiagnosticLevel::ERROR);
@@ -167,7 +155,7 @@ TEST_F(MapUpdateModuleTest, PublishesStampedLoadedMapWhenEnabled)  // NOLINT
   param_.publish_loaded_map = true;
   MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update_map(make_point(0.0, 0.0));
 
   ASSERT_TRUE(result.map_updated);
   ASSERT_TRUE(result.loaded_pcd_map.has_value());
@@ -182,7 +170,7 @@ TEST_F(MapUpdateModuleTest, DoesNotProduceLoadedMapWhenDisabled)  // NOLINT
   param_.publish_loaded_map = false;
   MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update_map(make_point(0.0, 0.0));
 
   ASSERT_TRUE(result.map_updated);
   EXPECT_FALSE(result.loaded_pcd_map.has_value());

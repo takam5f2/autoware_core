@@ -56,7 +56,7 @@ MapUpdateModule::MapUpdateModule(
   }
 }
 
-MapUpdateModule::UpdateResult MapUpdateModule::callback_timer(
+MapUpdateModule::UpdateResult MapUpdateModule::update_map_if_moved(
   const geometry_msgs::msg::Point & position)
 {
   UpdateResult result;
