@@ -37,7 +37,7 @@ NdtScanMatcher::NdtPtrType make_ndt(const pclomp::NdtParams & params)
 NdtScanMatcher::NdtScanMatcher(Params param, MapUpdateModule::PcdLoaderFunction pcd_loader)
 : param_(std::move(param)),
   ndt_ptr_(make_ndt(param_.ndt)),
-  map_update_(ndt_ptr_, param_.map_update, std::move(pcd_loader)),
+  map_update_(param_.map_update, param_.ndt, std::move(pcd_loader)),
   scan_matching_(param_.scan_matching, activated_)
 {
 }
@@ -74,32 +74,71 @@ NdtScanMatcher::ScanResult NdtScanMatcher::match_scan(
   return result;
 }
 
-MapUpdateModule::UpdateResult NdtScanMatcher::update_map_periodically()
+std::optional<sensor_msgs::msg::PointCloud2> NdtScanMatcher::install_map_update(
+  const geometry_msgs::msg::Point & position, DiagnosticsReport & report)
 {
-  MapUpdateModule::UpdateResult result;
+  // While the installed map does not cover this position, hold its lock for the whole load: a scan
+  // must not go on aligning against a map that cannot cover the sensor. Otherwise only the pointer
+  // swap is done under the lock, so the load overlaps with alignment.
+  const bool block_align_until_loaded = map_update_.out_of_map_range(position);
+
+  MapUpdateModule::MapUpdate update;
+  if (block_align_until_loaded) {
+    ndt_ptr_.with([&](auto & ndt_ptr) {
+      update = map_update_.update(position);
+      if (update.ndt) {
+        std::swap(ndt_ptr, update.ndt);
+      }
+    });
+  } else {
+    update = map_update_.update(position);
+    if (update.ndt) {
+      ndt_ptr_.with([&](auto & ndt_ptr) { std::swap(ndt_ptr, update.ndt); });
+    }
+  }
+
+  // update.ndt now holds the map that was just replaced, if any. Releasing it here runs its heavy
+  // destructor outside the lock.
+  update.ndt.reset();
+
+  report.append(std::move(update.diagnostics));
+  return std::move(update.loaded_pcd_map);
+}
+
+NdtScanMatcher::MapUpdateResult NdtScanMatcher::update_map_periodically()
+{
+  MapUpdateResult result;
+  DiagnosticsReport & report = result.diagnostics;
 
   // check is_activated
-  if (!result.diagnostics.check(
-        "is_activated", activated_, DiagnosticLevel::WARN, "Node is not activated.")) {
+  if (!report.check("is_activated", activated_, DiagnosticLevel::WARN, "Node is not activated.")) {
     return result;
   }
 
   // check is_set_last_update_position
   const auto position = scan_matching_.latest_ekf_position();
-  const bool is_set_last_update_position = (position != std::nullopt);
-  result.diagnostics.add_key_value({"is_set_last_update_position", is_set_last_update_position});
-  if (!is_set_last_update_position) {
-    result.diagnostics.update_level_and_message(
-      DiagnosticLevel::WARN,
-      "Cannot find the reference position for map update."
-      "Please check if the EKF odometry is provided to NDT.");
+  if (!report.check(
+        "is_set_last_update_position", position != std::nullopt, DiagnosticLevel::WARN,
+        "Cannot find the reference position for map update."
+        "Please check if the EKF odometry is provided to NDT.")) {
     return result;
   }
 
-  auto update = map_update_.update_map_if_moved(*position);
-  result.map_updated = update.map_updated;
-  result.loaded_pcd_map = std::move(update.loaded_pcd_map);
-  result.diagnostics.append(std::move(update.diagnostics));
+  // check distance_last_update_position_to_current_position
+  const auto moved_distance = map_update_.distance_from_last_update(*position);
+  if (moved_distance) {
+    report.add_key_value({"distance_last_update_position_to_current_position", *moved_distance});
+
+    // A map has been loaded before, but the vehicle has already outrun it.
+    if (map_update_.out_of_map_range(*position)) {
+      report.update_level_and_message(
+        DiagnosticLevel::ERROR, "Dynamic map loading is not keeping up.");
+    }
+  }
+
+  if (map_update_.needs_update(*position)) {
+    result.loaded_pcd_map = install_map_update(*position, report);
+  }
   return result;
 }
 
@@ -107,11 +146,8 @@ NdtScanMatcher::AlignResult NdtScanMatcher::align(const AlignInput & input)
 {
   AlignResult result;
 
-  // Outside the NDT lock: the map update takes that lock itself, and must not be called with it
-  // already held.
-  auto update = map_update_.update_map(input.initial_pose_in_map_frame.pose.pose.position);
-  result.loaded_pcd_map = std::move(update.loaded_pcd_map);
-  result.diagnostics.append(std::move(update.diagnostics));
+  result.loaded_pcd_map =
+    install_map_update(input.initial_pose_in_map_frame.pose.pose.position, result.diagnostics);
 
   // Copied before the NDT lock is taken, so the scan's lock stays a leaf.
   const auto scan = scan_in_baselink_frame_.with([](const auto & value) { return value; });

@@ -93,10 +93,17 @@ public:
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr & scan,
     const builtin_interfaces::msg::Time & now, const TransformLookup & base_from_sensor);
 
-  // The periodic map update. Reports `is_activated` and `is_set_last_update_position`, and touches
+  // The 1 Hz map update. Reports `is_activated` and `is_set_last_update_position`, and touches
   // nothing else until the trigger service has activated the matcher and an initial pose has
-  // arrived.
-  [[nodiscard]] MapUpdateModule::UpdateResult update_map_periodically();
+  // arrived. Past that it reports how far the vehicle has travelled since the map was last loaded,
+  // raises an error while it has outrun that map, and reloads once it has moved far enough to be
+  // worth it.
+  struct MapUpdateResult
+  {
+    DiagnosticsReport diagnostics;
+    std::optional<sensor_msgs::msg::PointCloud2> loaded_pcd_map;
+  };
+  [[nodiscard]] MapUpdateResult update_map_periodically();
 
   // `ndt_align_srv`.
   struct AlignInput
@@ -130,6 +137,12 @@ public:
   void set_activated(bool activated);
 
 private:
+  // Loads the map around `position` and installs it. The NDT lock is held for the whole load only
+  // while the installed map does not cover `position`; otherwise just for the swap, so that the
+  // load overlaps with whatever is aligning.
+  [[nodiscard]] std::optional<sensor_msgs::msg::PointCloud2> install_map_update(
+    const geometry_msgs::msg::Point & position, DiagnosticsReport & report);
+
   Params param_;
 
   // Set by the trigger service, read from three of the node's callback groups -- hence atomic
@@ -137,8 +150,8 @@ private:
   // reference to it; declared before it for that reason.
   std::atomic<bool> activated_{false};
 
-  // Declared before map_update_, which takes it by reference, and after param_, whose `ndt` field
-  // is applied to it on construction -- MapUpdateModule copies the map on the way in.
+  // The installed map. MapUpdateModule keeps its own and hands back a replacement, so this is
+  // written only by the swap in install_map_update() and never touched from inside a load.
   Guarded<NdtPtrType> ndt_ptr_;
 
   // Written by match_scan, read by align. Guarded rather than bare because this class cannot see

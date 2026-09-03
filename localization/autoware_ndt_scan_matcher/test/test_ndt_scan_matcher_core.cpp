@@ -303,7 +303,7 @@ TEST_F(NdtScanMatcherCoreTest, AligningOutsideMapRangeJoinsTheMapAndSearchMessag
   EXPECT_EQ(level_of(result.diagnostics), 2);  // ERROR, raised by the failed update
   EXPECT_EQ(
     result.diagnostics.message,
-    "update_ndt failed. If this happens with initial position estimation, make sure that(1) the "
+    "Map load failed. If this happens with initial position estimation, make sure that(1) the "
     "initial position matches the pcd map and (2) the map_loader is working properly.; "
     "No InputTarget. Please check the map file and the map_loader service");
   // The map check short-circuits the sensor-points check, as it does through the node.
@@ -315,7 +315,7 @@ TEST_F(NdtScanMatcherCoreTest, AligningOutsideMapRangeJoinsTheMapAndSearchMessag
 TEST_F(NdtScanMatcherCoreTest, MapUpdateWaitsForAReferencePosition)  // NOLINT
 {
   const auto deactivated = matcher_->update_map_periodically();
-  EXPECT_FALSE(deactivated.map_updated);
+  EXPECT_FALSE(deactivated.loaded_pcd_map.has_value());
   EXPECT_EQ(level_of(deactivated.diagnostics), 1);  // WARN
   EXPECT_EQ(keys_in_order(deactivated.diagnostics), (std::vector<std::string>{"is_activated"}))
     << "the activation gate should stop the update before it looks for a position";
@@ -323,7 +323,7 @@ TEST_F(NdtScanMatcherCoreTest, MapUpdateWaitsForAReferencePosition)  // NOLINT
   matcher_->set_activated(true);
   const auto before = matcher_->update_map_periodically();
 
-  EXPECT_FALSE(before.map_updated);
+  EXPECT_FALSE(has_key(before.diagnostics, "is_updated_map")) << "nothing should have been loaded";
   EXPECT_EQ(level_of(before.diagnostics), 1);  // WARN
   EXPECT_EQ(
     keys_in_order(before.diagnostics),
@@ -337,7 +337,7 @@ TEST_F(NdtScanMatcherCoreTest, MapUpdateWaitsForAReferencePosition)  // NOLINT
 
   const auto after = matcher_->update_map_periodically();
 
-  EXPECT_TRUE(after.map_updated);
+  EXPECT_TRUE(has_key(after.diagnostics, "is_updated_map"));
   // The two gate keys stay ahead of the map module's own findings.
   EXPECT_EQ(keys_in_order(after.diagnostics).front(), "is_activated");
   EXPECT_TRUE(has_key(after.diagnostics, "is_updated_map"));

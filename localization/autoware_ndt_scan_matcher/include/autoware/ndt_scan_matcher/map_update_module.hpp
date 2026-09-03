@@ -19,12 +19,15 @@
 #include "guarded.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
 
+#include <builtin_interfaces/msg/time.hpp>
+
 #include <autoware_map_msgs/srv/get_differential_point_cloud_map.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <pcl/point_types.h>
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -35,6 +38,12 @@
 namespace autoware::ndt_scan_matcher
 {
 
+// The loaded point cloud map, kept around the vehicle.
+//
+// This module owns the map it loads and never touches the NDT its caller has installed: a
+// successful update hands back a new NDT for the caller to swap in. That is what lets the caller
+// keep loading off its own critical path -- the load happens against this module's copy, and only
+// the pointer swap needs the caller's lock.
 class MapUpdateModule
 {
 public:
@@ -50,7 +59,7 @@ public:
   using PcdLoaderFunction = std::function<GetDifferentialPointCloudMap::Response::SharedPtr(
     const GetDifferentialPointCloudMap::Request::SharedPtr &)>;
 
-  // Owned by this module rather than by HyperParameters, so that declaring it costs no dependency
+  // Owned by this module rather than by HyperParameters so that declaring it costs no dependency
   // on rclcpp. HyperParameters embeds this type and fills it in from the node's parameters.
   struct Params
   {
@@ -65,73 +74,112 @@ public:
     bool publish_loaded_map{};
   };
 
-  // Result of a map update entry point: whether the NDT map changed, plus the diagnostics to
-  // report for this call.
-  struct UpdateResult
+  // Result of update(): the map to install, plus what to report for this call.
+  struct MapUpdate
   {
-    bool map_updated{false};
+    // The NDT the caller should install in place of the one it currently uses, or null when the
+    // map did not change. Returned by value rather than written through a shared pointer so that
+    // this module never has to reach into state the caller owns.
+    NdtPtrType ndt;
     DiagnosticsReport diagnostics;
     // The merged loaded point cloud map for debugging. Set only when publish_loaded_map is enabled
-    // and the map was updated; the ROS node publishes it as-is.
+    // and the map changed; the ROS node publishes it as-is.
     std::optional<sensor_msgs::msg::PointCloud2> loaded_pcd_map;
   };
 
-  MapUpdateModule(Guarded<NdtPtrType> & ndt_ptr, Params param, PcdLoaderFunction pcd_loader);
+  MapUpdateModule(Params param, pclomp::NdtParams ndt_params, PcdLoaderFunction pcd_loader);
 
-  bool out_of_map_range(const geometry_msgs::msg::Point & position);
+  // Loads the map around `position` and returns the NDT the caller should install. When to call
+  // this is the caller's decision; see needs_update() and out_of_map_range().
+  [[nodiscard]] MapUpdate update(const geometry_msgs::msg::Point & position);
 
-  // The two ways the map gets reloaded, and the difference between them.
-  //
-  // `update_map_if_moved` does nothing until the vehicle has travelled `update_distance` since the
-  // last successful load, and latches a rebuild when the loaded map no longer covers the sensor.
-  // `update_map` loads unconditionally, which is what an initial-pose search needs: it has no
-  // previous position to measure from.
-  //
-  // Do not call either while holding the lock for the NDT passed to the constructor: both take it.
-  UpdateResult update_map_if_moved(const geometry_msgs::msg::Point & position);
-  UpdateResult update_map(const geometry_msgs::msg::Point & position);
+  // True once the vehicle has moved far enough for a periodic update to be worth running.
+  [[nodiscard]] bool needs_update(const geometry_msgs::msg::Point & position);
+
+  // True while the lidar range around `position` is not covered by the loaded map. The next
+  // update() then rebuilds from scratch instead of loading differentially, and until it succeeds
+  // the caller should treat the map it has installed as unusable at `position`.
+  [[nodiscard]] bool out_of_map_range(const geometry_msgs::msg::Point & position);
+
+  // Distance moved since the position at which the map was last loaded successfully, or nullopt
+  // if no load has succeeded yet. Exposed so that the caller can tell "no map loaded yet" apart
+  // from "the map has fallen behind", which read the same through out_of_map_range().
+  [[nodiscard]] std::optional<double> distance_from_last_update(
+    const geometry_msgs::msg::Point & position);
 
 private:
-  // Distance from the last successful map-update position, or std::nullopt if there is none yet.
-  std::optional<double> distance_from_last_update(const geometry_msgs::msg::Point & position);
+  // Outcome of a single differential map load. "Failed" (the pcd_loader could not be reached) and
+  // "NoChange" (the loader had nothing to add or remove) must stay distinguishable: the former
+  // leaves the NDT without the map for this position and has to be retried, while the latter means
+  // the NDT is already up to date and is the normal steady state.
+  enum class LoadResult : uint8_t { Updated, NoChange, Failed };
 
-  // The map builder's state: the NDT the incremental path loads into, and whether the next update
-  // has to rebuild from scratch instead. The flag is latched rather than derived from the current
-  // position, because `update_map()` -- the align path -- runs without the distance check that
-  // would set it, and has to inherit the decision the timer path last made.
-  struct BuilderState
+  // The point clouds of the map cells the NDT currently holds, keyed by cell id, together with the
+  // stamp of the response they came from. Only populated when param_.publish_loaded_map is enabled.
+  // Keeping the cells separately (rather than one pre-merged cloud) is what allows a removed cell
+  // to be dropped again, so that the debug publish keeps matching the map the NDT actually holds.
+  struct LoadedPcdMap
   {
-    bool need_rebuild{false};
-    NdtPtrType secondary_ndt_ptr;
+    std::map<std::string, sensor_msgs::msg::PointCloud2> cells;
+    builtin_interfaces::msg::Time stamp;
   };
 
-  // Returns true if the NDT map was actually updated.
-  bool update_map_internal(
-    BuilderState & builder_state, const geometry_msgs::msg::Point & position,
+  // The map this module keeps cached. Its cell ids are what every request declares as `cached_ids`,
+  // which is what makes each load differential; each successful update() hands the caller a copy
+  // and leaves this behind, so the next load starts from the same generation the caller is using
+  // rather than one behind it. Note that cells leave this map as well as enter it, following the
+  // loader's ids_to_remove.
+  //
+  // The two representations are guarded as a unit because they have to describe the same set of
+  // cells, and because the caller drives update() from two callback groups that can run on
+  // different threads while the underlying MultiVoxelGridCovariance is not safe against concurrent
+  // loads.
+  struct CachedMap
+  {
+    NdtPtrType ndt;
+    LoadedPcdMap loaded_pcd_map;
+  };
+
+  // Rebuilds the map from scratch, adopting the result only once the load has succeeded so that a
+  // failing pcd_loader leaves the previously loaded map intact.
+  // Precondition: cached_map_'s lock must be held; the caller passes in its guarded value.
+  LoadResult rebuild_map(
+    CachedMap & cached_map, const geometry_msgs::msg::Point & position,
     DiagnosticsReport & diagnostics);
 
-  // Update the specified NDT
-  bool update_ndt(
-    const geometry_msgs::msg::Point & position, NdtType & ndt, DiagnosticsReport & diagnostics);
+  // Loads the differential map around `position` into `ndt`, mirroring the added and removed cells
+  // into `loaded_pcd_map` when param_.publish_loaded_map is enabled. Leaves both untouched unless
+  // it returns LoadResult::Updated.
+  LoadResult load_differential_map(
+    const geometry_msgs::msg::Point & position, NdtType & ndt, LoadedPcdMap & loaded_pcd_map,
+    DiagnosticsReport & diagnostics);
 
-  // Concatenates the cells kept in loaded_pcd_map_ into a single cloud for the debug publish.
-  [[nodiscard]] sensor_msgs::msg::PointCloud2 merge_loaded_pcd_map() const;
+  // The only place that reaches outside this module. Returns the loader's response, or nullptr if
+  // it could not be obtained.
+  [[nodiscard]] GetDifferentialPointCloudMap::Response::SharedPtr fetch_differential_map(
+    const geometry_msgs::msg::Point & position, const std::vector<std::string> & cached_ids,
+    DiagnosticsReport & diagnostics);
+
+  // Applies an already fetched response to `ndt` and to the debug map. Performs no I/O, so every
+  // call out of this module stays in fetch_differential_map() above.
+  void apply_differential_map(
+    const GetDifferentialPointCloudMap::Response & response, NdtType & ndt,
+    LoadedPcdMap & loaded_pcd_map);
+
+  // Merges the per-cell clouds into the single cloud the ROS node publishes. Best effort: a cell
+  // whose field layout does not match the others is skipped and reported through `diagnostics`.
+  [[nodiscard]] static sensor_msgs::msg::PointCloud2 merge_loaded_pcd_map(
+    const LoadedPcdMap & loaded_pcd_map, DiagnosticsReport & diagnostics);
 
   PcdLoaderFunction pcd_loader_;
 
-  // To prevent deadlocks, acquire locks in the following order:
-  // 1. builder_state_ -> ndt_ptr_
-  // 2. builder_state_ -> last_update_position_
-  Guarded<NdtPtrType> & ndt_ptr_;
-  Guarded<BuilderState> builder_state_;
+  // To prevent deadlocks, acquire cached_map_ before last_update_position_. This module never
+  // touches the NDT the caller has installed, so the caller may hold its own lock across update().
+  Guarded<CachedMap> cached_map_;
   Guarded<std::optional<geometry_msgs::msg::Point>> last_update_position_{std::nullopt};
 
   Params param_;
-
-  // Loaded point cloud map cells for the debug publish, keyed by cell id so that cells dropped by
-  // a differential update can be erased. Only populated when param_.publish_loaded_map is enabled.
-  // Accessed only while builder_state_'s lock is held.
-  std::map<std::string, sensor_msgs::msg::PointCloud2> loaded_pcd_map_;
+  pclomp::NdtParams ndt_params_;
 };
 
 }  // namespace autoware::ndt_scan_matcher

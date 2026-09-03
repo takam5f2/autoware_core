@@ -53,7 +53,7 @@ struct PoseInitializationEstimate
 };
 
 // What the search produced, returned rather than written through an out-parameter, matching
-// MapUpdateModule::UpdateResult: the caller applies the reports of the calls it makes in the order
+// MapUpdateModule::MapUpdate: the caller applies the reports of the calls it makes in the order
 // it makes them, which is what keeps the joined diagnostics message in order.
 struct PoseInitializationResult
 {
