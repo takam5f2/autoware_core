@@ -1153,9 +1153,16 @@ std::tuple<geometry_msgs::msg::PoseWithCovarianceStamped, double> NDTScanMatcher
   const std::vector<double> sample_stddev{stddev_x, stddev_y, stddev_z, stddev_roll, stddev_pitch};
 
   // Optimizing (x, y, z, roll, pitch, yaw) 6 dimensions.
+  //
+  // Seeded from the request's stamp, so that two requests explore differently -- a retry of a
+  // failed initialization is worth making -- while replaying one request reproduces its search
+  // exactly. A per-node counter would give the first property and not the second, and the shared
+  // `static` this replaced gave neither reliably: which inputs a search proposed depended on how
+  // many searches had run anywhere in the process before it.
   TreeStructuredParzenEstimator tpe(
     TreeStructuredParzenEstimator::Direction::MAXIMIZE,
-    param_.initial_pose_estimation.n_startup_trials, sample_mean, sample_stddev);
+    param_.initial_pose_estimation.n_startup_trials, sample_mean, sample_stddev,
+    static_cast<std::uint64_t>(rclcpp::Time(initial_pose_with_cov.header.stamp).nanoseconds()));
 
   std::vector<Particle> particle_array;
   auto output_cloud = std::make_shared<pcl::PointCloud<PointSource>>();
