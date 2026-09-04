@@ -25,6 +25,7 @@
 #include <autoware/ndt_scan_matcher/diagnostics_report.hpp>
 #include <autoware/ndt_scan_matcher/guarded.hpp>
 #include <autoware/ndt_scan_matcher/map_update_module.hpp>
+#include <autoware/ndt_scan_matcher/ndt_scan_matcher.hpp>
 #include <autoware/ndt_scan_matcher/particle.hpp>
 #include <autoware/ndt_scan_matcher/pose_initialization_search.hpp>
 #include <autoware/ndt_scan_matcher/pose_interpolation_buffer.hpp>
@@ -35,6 +36,7 @@ namespace
 // Touch the headers so that they are instantiated rather than merely parsed.
 [[maybe_unused]] autoware::ndt_scan_matcher::DiagnosticsReport report_instance;
 [[maybe_unused]] autoware::ndt_scan_matcher::MapUpdateModule::Params params_instance;
+[[maybe_unused]] autoware::ndt_scan_matcher::NdtScanMatcher::Params root_params_instance;
 [[maybe_unused]] autoware::ndt_scan_matcher::Guarded<int> guarded_instance;
 [[maybe_unused]] autoware::ndt_scan_matcher::PoseInterpolationBuffer buffer_instance{1.0, 1.0};
 }  // namespace
