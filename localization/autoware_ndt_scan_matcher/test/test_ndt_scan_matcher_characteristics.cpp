@@ -1078,49 +1078,37 @@ TEST(NdtScanMatcherCharacteristics, OutOfMapRangeIsAWarnOnTheScanAndAnErrorOnThe
   EXPECT_EQ(loads.back().value("is_updated_map"), "True");
 }
 
-/// An unknown `converged_param_type` runs the alignment and then discards it: ERROR, nothing
-/// published.
+/// An unknown `converged_param_type` stops the node from starting.
 ///
-/// `static_cast<ConvergedParamType>` at construction accepts any integer, so a mistyped config
-/// reaches this branch on every scan. The order is what is pinned: `iteration_num` present says
-/// `align` ran, `transform_probability_diff` absent says the callback left before the score diffs,
-/// and no topic arrives. Validating the parameter is a separate finding.
-TEST(NdtScanMatcherCharacteristics, UnknownConvergedParamTypeIsAnErrorAfterAligning)
+/// `static_cast<ConvergedParamType>` at construction accepts any integer. It used to reach the
+/// scan match on every scan, which aligned first and only then found it could not judge the
+/// result -- the work discarded once per scan, for the life of the node, and the node otherwise
+/// running as if configured. `HyperParameters` rejects it now, so the mistake surfaces once, at
+/// startup, where a mistyped config belongs.
+///
+/// Constructing the harness is the whole test: `NdtHarness` builds the node first, before any
+/// executor or thread, so a throw from there leaves nothing running behind it.
+TEST(NdtScanMatcherCharacteristics, UnknownConvergedParamTypeIsRejectedAtConstruction)
 {
-  // Arrange
   auto overrides = converged_hot_path_overrides();
   overrides.emplace_back("score_estimation.converged_param_type", 2);  // 0 and 1 are the only types
-  auto harness = make_ready_harness(std::move(overrides));
 
-  auto ndt_pose = harness->capture<geometry_msgs::msg::PoseStamped>("/ndt_pose");
-  auto points_aligned = harness->capture<sensor_msgs::msg::PointCloud2>("/points_aligned");
-  ASSERT_TRUE(wait_for_capture_discovery(*harness, ndt_pose, points_aligned));
+  EXPECT_THROW(NdtHarness(std::move(overrides)), std::runtime_error);
+}
 
-  ASSERT_TRUE(harness->ensure_map_loaded());
+/// An unknown `covariance_estimation_type` stops the node from starting.
+///
+/// The same `static_cast` hole as above, and the harder one to notice: an unrecognised value fell
+/// through `estimate_covariance`'s last branch to a fixed covariance, with no ERROR and no key to
+/// show for it. The node ran as if configured while publishing a covariance nobody asked for.
+///
+/// A value of 4 is one past MULTI_NDT_SCORE; the shipped configuration uses 0.
+TEST(NdtScanMatcherCharacteristics, UnknownCovarianceEstimationTypeIsRejectedAtConstruction)
+{
+  auto overrides = converged_hot_path_overrides();
+  overrides.emplace_back("covariance.covariance_estimation.covariance_estimation_type", 4);
 
-  // Act
-  ScanDrive drive;
-  drive.initial_pose = InitialPoseSpec{};
-
-  const auto outcome = harness->drive_one_scan(drive);
-
-  // Assert
-  ASSERT_TRUE(outcome.has_value());
-  const auto & diag = outcome->diag;
-
-  EXPECT_TRUE(diag.has_key("iteration_num"))
-    << "alignment did not run. keys: " << ::testing::PrintToString(diag.keys_in_order());
-  EXPECT_FALSE(diag.has_key("transform_probability_diff"))
-    << "the callback ran past the type check. keys: "
-    << ::testing::PrintToString(diag.keys_in_order());
-  EXPECT_EQ(diag.level(), level_error);
-  EXPECT_TRUE(contains(diag.message(), "Unknown converged param type"))
-    << "message was: " << diag.message();
-  EXPECT_GT(diag.value_as_double("skipping_publish_num"), 0.0);
-
-  // The record above is published after the callback returned, so its publishes went out first.
-  EXPECT_EQ(ndt_pose->count(), 0U);
-  EXPECT_EQ(points_aligned->count(), 0U);
+  EXPECT_THROW(NdtHarness(std::move(overrides)), std::runtime_error);
 }
 
 /// With TRANSFORM_PROBABILITY selected, the transform-probability threshold decides convergence.
