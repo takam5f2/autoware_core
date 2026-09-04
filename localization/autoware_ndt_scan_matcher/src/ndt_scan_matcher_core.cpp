@@ -719,7 +719,10 @@ bool NDTScanMatcher::callback_sensor_points_main(
     // check each of point score
     const float lower_nvs = 1.0f;
     const float upper_nvs = 3.5f;
-    if (voxel_score_points_pub_->get_subscription_count() > 0) {
+    // A parameter rather than `get_subscription_count() > 0`: colouring every point is a pass over
+    // the scan on top of the alignment, and what a scan costs -- and `execution_time` reports --
+    // should not change because someone opened a viewer.
+    if (param_.score_estimation.publish_voxel_score_points) {
       pcl::PointCloud<pcl::PointXYZRGB>::Ptr nvs_points_in_map_ptr_rgb{
         new pcl::PointCloud<pcl::PointXYZRGB>};
       nvs_points_in_map_ptr_rgb =

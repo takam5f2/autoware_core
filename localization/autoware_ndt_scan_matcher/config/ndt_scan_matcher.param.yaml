@@ -84,6 +84,11 @@
       # Threshold for deciding whether to trust the estimation result
       converged_param_nearest_voxel_transformation_likelihood: 2.3
 
+      # Publish voxel_score_points, which colours every scan point by its nearest-voxel score.
+      # Computing it costs a pass over the scan on top of the alignment, so it is off by default:
+      # with it on, execution_time grows whether or not anyone is looking at the topic.
+      publish_voxel_score_points: false
+
       # Scan matching score based on no ground LiDAR scan
       no_ground_points:
         enable: false
