@@ -28,6 +28,7 @@
 #include <autoware/ndt_scan_matcher/particle.hpp>
 #include <autoware/ndt_scan_matcher/pose_initialization_search.hpp>
 #include <autoware/ndt_scan_matcher/pose_interpolation_buffer.hpp>
+#include <autoware/ndt_scan_matcher/scan_matching_module.hpp>
 
 namespace
 {
