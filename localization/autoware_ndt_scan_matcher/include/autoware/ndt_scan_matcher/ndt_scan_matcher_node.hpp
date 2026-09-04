@@ -23,7 +23,7 @@
 #include "map_update_module.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
 #include "pose_initialization_search.hpp"
-#include "pose_interpolation_buffer.hpp"
+#include "scan_matching_module.hpp"
 
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
 #include <autoware_utils_logging/logger_level_configure.hpp>
@@ -48,6 +48,7 @@
 
 #include <fmt/format.h>
 #include <pcl/point_types.h>
+#include <pcl_conversions/pcl_conversions.h>
 
 #ifdef ROS_DISTRO_GALACTIC
 #include <tf2_sensor_msgs/tf2_sensor_msgs.h>
@@ -56,11 +57,10 @@
 #endif
 
 #include <array>
+#include <atomic>
 #include <deque>
 #include <map>
 #include <memory>
-#include <mutex>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -73,11 +73,6 @@ using DiagnosticsInterface = autoware_utils_diagnostics::DiagnosticsInterface;
 
 class NdtScanMatcherNode : public rclcpp::Node
 {
-  using PointSource = pcl::PointXYZ;
-  using PointTarget = pcl::PointXYZ;
-  using NormalDistributionsTransform =
-    pclomp::MultiGridNormalDistributionsTransform<PointSource, PointTarget>;
-
 public:
   explicit NdtScanMatcherNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
@@ -92,16 +87,15 @@ private:
 
   void callback_initial_pose(
     geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr initial_pose_msg_ptr);
-  void callback_initial_pose_main(
-    const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr initial_pose_msg_ptr);
 
   void callback_regularization_pose(
     geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr pose_conv_msg_ptr);
 
   void callback_sensor_points(
     sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame);
-  bool callback_sensor_points_main(
-    sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame);
+  // The TF the scan match needs, looked up here because the module holds no TF buffer.
+  [[nodiscard]] ScanMatchingModule::TransformLookup lookup_base_from_sensor(
+    const std::string & sensor_frame);
 
   void service_trigger_node(
     const std_srvs::srv::SetBool::Request::SharedPtr req,
@@ -116,27 +110,19 @@ private:
       req,
     autoware_internal_localization_msgs::srv::PoseWithCovarianceStamped::Response::SharedPtr res);
 
-  void transform_sensor_measurement(
-    const std::string & source_frame, const std::string & target_frame,
-    const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_input_ptr,
-    pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_output_ptr);
+  void publish_scan_matching_output(const ScanMatchingModule::ScanMatchingOutput & output);
 
-  void publish_tf(
-    const rclcpp::Time & sensor_ros_time, const geometry_msgs::msg::Pose & result_pose_msg);
-  void publish_pose(
-    const rclcpp::Time & sensor_ros_time, const geometry_msgs::msg::Pose & result_pose_msg,
-    const std::array<double, 36> & ndt_covariance, const bool is_converged);
-  void publish_point_cloud(
-    const rclcpp::Time & sensor_ros_time, const std::string & frame_id,
-    const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_in_map_ptr);
-  void publish_marker(
-    const rclcpp::Time & sensor_ros_time, const std::vector<geometry_msgs::msg::Pose> & pose_array,
-    NormalDistributionsTransform & ndt_ref);
-  void publish_initial_to_result(
-    const rclcpp::Time & sensor_ros_time, const geometry_msgs::msg::Pose & result_pose_msg,
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_cov_msg,
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_old_msg,
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_new_msg);
+  MapUpdateModule::GetDifferentialPointCloudMap::Response::SharedPtr
+  get_differential_point_cloud_map(
+    const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request);
+
+  // Emits the log lines a core module recorded, one `case` per site.
+  void replay_logs(const std::vector<LogRequest> & logs);
+
+  // Forwards a diagnostics update produced by a core module to the given DiagnosticsInterface.
+  static void apply_diagnostics_update(
+    DiagnosticsInterface & diagnostics, const DiagnosticsReport & report);
+
   // Loads the map around `position` and installs it, reporting into `diagnostics`. Returns the
   // merged debug cloud when the module produced one, for the caller to stamp and publish.
   [[nodiscard]] std::optional<sensor_msgs::msg::PointCloud2> install_map_update(
@@ -145,31 +131,6 @@ private:
   void publish_loaded_map_if_present(
     const std::optional<sensor_msgs::msg::PointCloud2> & loaded_pcd_map,
     const std::optional<rclcpp::Time> & stamp = std::nullopt) const;
-
-  static int count_oscillation(const std::vector<geometry_msgs::msg::Pose> & result_pose_msg_array);
-
-  Eigen::Matrix2d estimate_covariance(
-    const pclomp::NdtResult & ndt_result, const Eigen::Matrix4f & initial_pose_matrix,
-    const rclcpp::Time & sensor_ros_time, NormalDistributionsTransform & ndt_ref);
-
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr visualize_point_score(
-    const pcl::shared_ptr<pcl::PointCloud<PointSource>> & sensor_points_in_map_ptr,
-    const float & lower_nvs, const float & upper_nvs, NormalDistributionsTransform & ndt_ref);
-
-  void add_regularization_pose(
-    const rclcpp::Time & sensor_ros_time, NormalDistributionsTransform & ndt_ref);
-
-  // Performs the pcd_loader service call for MapUpdateModule, returning nullptr on failure.
-  MapUpdateModule::GetDifferentialPointCloudMap::Response::SharedPtr
-  get_differential_point_cloud_map(
-    const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request);
-
-  // Forwards a diagnostics update produced by MapUpdateModule to the given DiagnosticsInterface.
-  // Emits the log lines a core module recorded, one `case` per site.
-  void replay_logs(const std::vector<LogRequest> & logs);
-
-  static void apply_diagnostics_update(
-    DiagnosticsInterface & diagnostics, const DiagnosticsReport & report);
 
   rclcpp::TimerBase::SharedPtr map_update_timer_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
@@ -223,29 +184,28 @@ private:
 
   rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
 
-  Guarded<std::shared_ptr<NormalDistributionsTransform>> ndt_ptr_{
-    std::make_shared<NormalDistributionsTransform>()};
-
-  pcl::shared_ptr<pcl::PointCloud<PointSource>> sensor_points_in_baselink_frame_;
-
-  std::unique_ptr<PoseInterpolationBuffer> initial_pose_buffer_;
-
-  // Keep latest position for dynamic map loading
-  Guarded<std::optional<geometry_msgs::msg::Point>> latest_ekf_position_{std::nullopt};
-
-  std::unique_ptr<PoseInterpolationBuffer> regularization_pose_buffer_;
-
-  std::atomic<bool> is_activated_;
-  // Consecutive scans that produced nothing to publish, reset by a success or by deactivation.
-  // A member rather than a function-local static: one counter per node, not one per process.
-  int64_t skipping_publish_num_{0};
   std::unique_ptr<DiagnosticsInterface> diagnostics_scan_points_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_initial_pose_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_regularization_pose_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_map_update_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_ndt_align_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_trigger_node_;
+
+  Guarded<std::shared_ptr<MapUpdateModule::NdtType>> ndt_ptr_{
+    std::make_shared<MapUpdateModule::NdtType>()};
+
+  // Written by callback_sensor_points, read by service_ndt_align. Both are registered in
+  // sensor_callback_group, which is MutuallyExclusive, so the executor -- not a mutex -- is what
+  // keeps these two from overlapping.
+  ScanMatchingModule::CloudPtr sensor_points_in_baselink_frame_;
+
+  std::atomic<bool> is_activated_;
+  // Consecutive scans that produced nothing to publish, reset by a success or by deactivation.
+  // A member rather than a function-local static: one counter per node, not one per process.
+  int64_t skipping_publish_num_{0};
+
   std::unique_ptr<MapUpdateModule> map_update_module_;
+  std::unique_ptr<ScanMatchingModule> scan_matching_module_;
   PoseInitializationParams pose_initialization_params_;
   std::unique_ptr<autoware_utils_logging::LoggerLevelConfigure> logger_configure_;
 

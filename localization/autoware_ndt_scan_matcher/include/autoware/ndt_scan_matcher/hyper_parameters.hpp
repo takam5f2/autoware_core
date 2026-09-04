@@ -17,6 +17,7 @@
 
 #include "map_update_module.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
+#include "scan_matching_module.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -28,18 +29,6 @@
 
 namespace autoware::ndt_scan_matcher
 {
-
-enum class ConvergedParamType {
-  TRANSFORM_PROBABILITY = 0,
-  NEAREST_VOXEL_TRANSFORMATION_LIKELIHOOD = 1
-};
-
-enum class CovarianceEstimationType {
-  FIXED_VALUE = 0,
-  LAPLACE_APPROXIMATION = 1,
-  MULTI_NDT = 2,
-  MULTI_NDT_SCORE = 3,
-};
 
 // Rejects a parameter whose integer names none of an enum's values. `static_cast` accepts any
 // integer, so without this a mistyped config reaches the code that uses it: once per scan for
