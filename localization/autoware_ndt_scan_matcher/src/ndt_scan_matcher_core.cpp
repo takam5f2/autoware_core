@@ -368,13 +368,12 @@ void NDTScanMatcher::callback_sensor_points(
     callback_sensor_points_main(sensor_points_msg_in_sensor_frame);
 
   // check skipping_publish_num
-  static int64_t skipping_publish_num = 0;
-  skipping_publish_num =
-    ((is_succeed_scan_matching || !is_activated_) ? 0 : (skipping_publish_num + 1));
-  diagnostics_scan_points_->add_key_value("skipping_publish_num", skipping_publish_num);
-  if (skipping_publish_num >= param_.validation.skipping_publish_num) {
+  skipping_publish_num_ =
+    ((is_succeed_scan_matching || !is_activated_) ? 0 : (skipping_publish_num_ + 1));
+  diagnostics_scan_points_->add_key_value("skipping_publish_num", skipping_publish_num_);
+  if (skipping_publish_num_ >= param_.validation.skipping_publish_num) {
     std::stringstream message;
-    message << "skipping_publish_num exceed limit (" << skipping_publish_num << " times).";
+    message << "skipping_publish_num exceed limit (" << skipping_publish_num_ << " times).";
     diagnostics_scan_points_->update_level_and_message(
       diagnostic_msgs::msg::DiagnosticStatus::WARN, message.str());
   }

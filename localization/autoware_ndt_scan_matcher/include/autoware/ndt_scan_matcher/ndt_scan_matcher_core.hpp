@@ -228,6 +228,9 @@ private:
   std::unique_ptr<autoware::localization_util::SmartPoseBuffer> regularization_pose_buffer_;
 
   std::atomic<bool> is_activated_;
+  // Consecutive scans that produced nothing to publish, reset by a success or by deactivation.
+  // A member rather than a function-local static: one counter per node, not one per process.
+  int64_t skipping_publish_num_{0};
   std::unique_ptr<DiagnosticsInterface> diagnostics_scan_points_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_initial_pose_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_regularization_pose_;
