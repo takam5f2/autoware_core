@@ -15,6 +15,7 @@
 #ifndef AUTOWARE__NDT_SCAN_MATCHER__HYPER_PARAMETERS_HPP_
 #define AUTOWARE__NDT_SCAN_MATCHER__HYPER_PARAMETERS_HPP_
 
+#include "map_update_module.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
 
 #include <rclcpp/rclcpp.hpp>
@@ -116,13 +117,9 @@ struct HyperParameters
     } covariance_estimation{};
   } covariance{};
 
-  struct DynamicMapLoading
-  {
-    double update_distance{};
-    double map_radius{};
-    double lidar_radius{};
-    bool publish_loaded_map{};
-  } dynamic_map_loading{};
+  // Defined by MapUpdateModule itself: that module has no rclcpp dependency, and declaring its
+  // parameter type here would have forced one on it.
+  MapUpdateModule::Params dynamic_map_loading{};
 
 public:
   explicit HyperParameters(rclcpp::Node * node)

@@ -42,18 +42,29 @@ else()
   message(WARNING "OpenMP not found")
 endif()
 
-ament_auto_add_library(${PROJECT_NAME} SHARED
+# The core layer: the decision logic, with no dependency on rclcpp. It may name message types;
+# it may not use the client library, create publishers, subscriptions, services or timers, read a
+# clock, or log. `test_core_is_ros_free` is what enforces that -- linking cannot, because
+# autoware_localization_util pulls rclcpp in transitively.
+ament_auto_add_library(${PROJECT_NAME}_core SHARED
   src/map_update_module.cpp
-  src/ndt_scan_matcher_core.cpp
   src/ndt_scan_matcher_helper.cpp
   src/particle.cpp
 )
 
 link_directories(${PCL_LIBRARY_DIRS})
-target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} multigrid_ndt_omp)
+target_link_libraries(${PROJECT_NAME}_core ${PCL_LIBRARIES} multigrid_ndt_omp)
+
+# The ROS layer. Keeps the ${PROJECT_NAME} name so that the plugin string, the executable name and
+# every existing target_link_libraries stay as they are.
+ament_auto_add_library(${PROJECT_NAME} SHARED
+  src/ndt_scan_matcher_node.cpp
+)
+
+target_link_libraries(${PROJECT_NAME} ${PROJECT_NAME}_core ${PCL_LIBRARIES} multigrid_ndt_omp)
 
 autoware_agnocast_wrapper_register_node(${PROJECT_NAME}
-  PLUGIN "autoware::ndt_scan_matcher::NDTScanMatcher"
+  PLUGIN "autoware::ndt_scan_matcher::NdtScanMatcherNode"
   EXECUTABLE ${PROJECT_NAME}_node
   ROS2_EXECUTOR MultiThreadedExecutor
   AGNOCAST_EXECUTOR CallbackIsolatedAgnocastExecutor
@@ -118,7 +129,23 @@ if(BUILD_TESTING)
   ament_auto_add_gtest(test_map_update_module
     test/test_map_update_module.cpp
   )
-  target_link_libraries(test_map_update_module ${PROJECT_NAME} multigrid_ndt_omp ${PCL_LIBRARIES})
+  target_link_libraries(test_map_update_module ${PROJECT_NAME}_core multigrid_ndt_omp ${PCL_LIBRARIES})
+
+  # Compiling this is the test: the core's public headers, with rclcpp off the include path. See
+  # the file for what it covers.
+  add_library(test_core_is_ros_free OBJECT test/test_core_is_ros_free.cpp)
+  target_include_directories(test_core_is_ros_free PRIVATE include)
+  # SYSTEM so that PCL's own headers are not held to this package's -Werror=pedantic; every other
+  # target gets the same treatment by linking ${PCL_LIBRARIES}, which this one deliberately does not.
+  target_include_directories(test_core_is_ros_free SYSTEM PRIVATE ${PCL_INCLUDE_DIRS})
+  target_link_libraries(test_core_is_ros_free PRIVATE
+    ${autoware_map_msgs_TARGETS}
+    ${builtin_interfaces_TARGETS}
+    ${geometry_msgs_TARGETS}
+    ${sensor_msgs_TARGETS}
+    ${std_msgs_TARGETS}
+    ${visualization_msgs_TARGETS}
+  )
 endif()
 
 autoware_ament_auto_package(

@@ -15,8 +15,8 @@
 #ifndef AUTOWARE__NDT_SCAN_MATCHER__MAP_UPDATE_MODULE_HPP_
 #define AUTOWARE__NDT_SCAN_MATCHER__MAP_UPDATE_MODULE_HPP_
 
+#include "diagnostics_report.hpp"
 #include "guarded.hpp"
-#include "hyper_parameters.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
 
 #include <autoware_map_msgs/srv/get_differential_point_cloud_map.hpp>
@@ -25,14 +25,11 @@
 
 #include <pcl/point_types.h>
 
-#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
-#include <utility>
-#include <variant>
 #include <vector>
 
 namespace autoware::ndt_scan_matcher
@@ -57,42 +54,19 @@ public:
   using PcdLoaderFunction = std::function<GetDifferentialPointCloudMap::Response::SharedPtr(
     const GetDifferentialPointCloudMap::Request::SharedPtr &)>;
 
-  // Severity of a diagnostics update. Mirrors diagnostic_msgs::msg::DiagnosticStatus levels so
-  // this module needs no ROS diagnostics dependency.
-  enum class DiagnosticLevel : int8_t { OK = 0, WARN = 1, ERROR = 2, STALE = 3 };
-
-  // A single diagnostic key/value. The value keeps its type so the ROS node can format it exactly
-  // the way DiagnosticsInterface would (e.g. bool as "True"/"False").
-  struct DiagnosticKeyValue
+  // Owned by this module rather than by HyperParameters, so that declaring it costs no dependency
+  // on rclcpp. HyperParameters embeds this type and fills it in from the node's parameters.
+  struct Params
   {
-    std::string key;
-    std::variant<bool, int64_t, double, std::string> value;
-  };
-
-  // Diagnostics accumulated while updating the map: key/values plus an overall status (level +
-  // message). Returned to the ROS node, which forwards it to a DiagnosticsInterface. Plain data,
-  // kept ROS-free on purpose.
-  struct DiagnosticsReport
-  {
-    DiagnosticLevel level{DiagnosticLevel::OK};
-    std::string message;
-    std::vector<DiagnosticKeyValue> key_values;
-
-    void add_key_value(DiagnosticKeyValue key_value) { key_values.push_back(std::move(key_value)); }
-
-    // Accumulates like DiagnosticsInterface: raises the level and appends the message.
-    void update_level_and_message(DiagnosticLevel new_level, const std::string & new_message)
-    {
-      if (static_cast<int8_t>(new_level) > static_cast<int8_t>(DiagnosticLevel::OK)) {
-        if (!message.empty()) {
-          message += "; ";
-        }
-        message += new_message;
-      }
-      if (static_cast<int8_t>(new_level) > static_cast<int8_t>(level)) {
-        level = new_level;
-      }
-    }
+    // How far the vehicle has to move before the periodic update runs again [m].
+    double update_distance{};
+    // Radius of the map requested from the pcd loader [m].
+    double map_radius{};
+    // Radius of the input lidar range [m]. Once map_radius - lidar_radius is exceeded the loaded
+    // map no longer covers the sensor and has to be rebuilt.
+    double lidar_radius{};
+    // Whether to produce the merged loaded map for the debug publish.
+    bool publish_loaded_map{};
   };
 
   // Result of a map update entry point: whether the NDT map changed, plus the diagnostics to
@@ -114,14 +88,12 @@ private:
   };
 
 public:
-  MapUpdateModule(
-    Guarded<NdtPtrType> & ndt_ptr, HyperParameters::DynamicMapLoading param,
-    PcdLoaderFunction pcd_loader);
+  MapUpdateModule(Guarded<NdtPtrType> & ndt_ptr, Params param, PcdLoaderFunction pcd_loader);
 
   bool out_of_map_range(const geometry_msgs::msg::Point & position);
 
 private:
-  friend class NDTScanMatcher;
+  friend class NdtScanMatcherNode;
   friend class MapUpdateModuleTest;
 
   UpdateResult callback_timer(const geometry_msgs::msg::Point & position);
@@ -156,7 +128,7 @@ private:
   Guarded<BuilderState> builder_state_;
   Guarded<std::optional<geometry_msgs::msg::Point>> last_update_position_{std::nullopt};
 
-  HyperParameters::DynamicMapLoading param_;
+  Params param_;
 
   // Loaded point cloud map cells for the debug publish, keyed by cell id so that cells dropped by
   // a differential update can be erased. Only populated when param_.publish_loaded_map is enabled.
