@@ -27,6 +27,25 @@
 - 並び替え後の章: A ゲート 7 / B 初期姿勢と活性化 6 / C 収束経路 12 / D `ndt_align_srv` 6 / E 出荷設定 2 / F 地図 5 / G 既定オフ 4。カウンタを進めたまま終わる 6 ケースに `ScopeExit` を足し、順序をプロセス共有の `static` カウンタから独立させた。宣言順と `--gtest_shuffle`（seed 7 / 12345）で 42/42。
 - ユーザーは設計説明資料（Confluence）を執筆中。仕様化テストの節は出発点 42 件の表を主にし、到達点 44 件との差分（改名 4、追加 2）を最後にまとめる方針。追加 2 件は元の振る舞いが観測不能で pin できなかった箇所: `UnknownCovarianceEstimationTypeIsRejectedAtConstruction`（line/03）、`VoxelScorePointsFollowItsParameter`（line/05）。
 
+## 1 件ずつの確認 — 進捗（2026-09-04）
+
+読む場所は `line/00-characterization-on-main`（9468dd3d）。docstring が指すシンボルは同じチェックアウトの `src/ndt_scan_matcher_core.cpp` にある。1 件ごとに「何を pin しているか / どう駆動しているか / 何を assert しているか / pin していないもの」の 4 点で短くまとめ、直すかどうかはユーザーが決める。
+
+済み（ファイル順）:
+
+1. `EmptyScanIsRejectedWithAWarning` — 「最終出力を返さない」は帰結。pin は WARN・文言・次キー不在の 3 点。
+2. `StaleScanWarnsButProcessingContinues` — SUSPICIOUS。続行の証人は次キー 1 個。非活性で流すので publish までは見ていない。
+3. `ScanWithoutATransformIsAnError` — 文言は pin しない（前半が tf2 の文言）。同一 frame の短絡（TF を引かずポインタを共有）は網の外。
+4. `NearFieldScanIsRejectedBeforeActivationCheck` — 最遠点 < `required_distance`。順序の証人は `is_activated` 不在。読み方: 点群の資格審査 4 つ → 保存 → ノード側の準備確認、の 2 段構成。
+5. `SensorPointsAreStoredEvenWhileDeactivated` — SUSPICIOUS。align サービスは `is_activated_` を見ないので Act の `activate()` は不要。外すと docstring（初期位置推定中は非活性）に忠実で pin が強くなる。**未対応、ユーザー判断待ち。**
+
+次: 6. `MissingInitialPoseAbortsBeforeMapCheck`。
+
+修正候補（未実施）:
+
+- 5 の `activate()` を外す。
+- 出荷設定の章見出し「閾値をそのまま使うのはこの 2 件だけ」は不正確。`WalkAcrossACellBoundary…` と `UpdateDistanceIsAStrictBoundary` も `shipped_config_overrides()` を素のまま使う。
+
 ## 次にやること
 
 1. 仕様化テストを 1 件ずつ確認する（読みやすさ優先）。docstring が参照する旧シンボル名は line/00 のコードでは正しいので、line/00 上で読む。
