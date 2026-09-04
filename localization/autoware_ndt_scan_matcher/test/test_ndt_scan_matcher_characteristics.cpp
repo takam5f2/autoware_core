@@ -1659,7 +1659,7 @@ TEST(NdtScanMatcherCharacteristics, AligningOutsideMapRangeFailsWithThreeJoinedM
   EXPECT_EQ(diag->level(), level_error);
   EXPECT_EQ(
     diag->message(),
-    "update_ndt failed. If this happens with initial position estimation, make sure that(1) the "
+    "Map load failed. If this happens with initial position estimation, make sure that(1) the "
     "initial position matches the pcd map and (2) the map_loader is working properly.; "
     "No InputTarget. Please check the map file and the map_loader service; "
     "ndt_align_service is failed.");
@@ -1914,12 +1914,18 @@ TEST(NdtScanMatcherCharacteristics, UpdateDistanceIsAStrictBoundary)
     past_boundary->value_as_double("distance_last_update_position_to_current_position"), 20.0);
 }
 
-/// A failed load is not retried until the vehicle has moved `update_distance`.
+/// A load that finds no map is not retried until the vehicle has moved `update_distance`.
 ///
-/// A failed rebuild records its position like a successful one (`map_update_module.cpp:176`), so
-/// `should_update_map` sees distance 0 on every following tick. `need_rebuild` stays set, so the
-/// query that finally comes is a rebuild again. Starting with the EKF pose off the map therefore
-/// costs one attempt per `update_distance` of travel, not one per second.
+/// The loader is reachable here and answers with nothing, which is "no map at this position"
+/// rather than "could not ask". That records the position like a successful load, so the following
+/// ticks measure 0 m and do not query. Starting with the EKF pose off the map therefore costs one
+/// attempt per `update_distance` of travel, not one per second. Contrast
+/// `WithoutAMapLoaderTheTimerKeepsRetrying`, where the loader cannot be reached at all.
+///
+/// The retry is no longer a rebuild. `is_need_rebuild` follows `out_of_map_range` at the moment of
+/// the query rather than being latched until a load succeeds, and 21 m from the recorded position
+/// is still inside `map_radius - lidar_radius`. The map is empty either way; what changes is that
+/// a stale flag can no longer outlive the position it was set for.
 TEST(NdtScanMatcherCharacteristics, FailedLoadIsNotRetriedUntilTheVehicleMovesUpdateDistance)
 {
   // Arrange
@@ -1953,23 +1959,22 @@ TEST(NdtScanMatcherCharacteristics, FailedLoadIsNotRetriedUntilTheVehicleMovesUp
     }
   }
   ASSERT_TRUE(retry.has_value());
-  EXPECT_EQ(retry->value("is_need_rebuild"), "True");
+  EXPECT_EQ(retry->value("is_need_rebuild"), "False");
   EXPECT_EQ(retry->value("is_updated_map"), "False");
 }
 
-/// SUSPICIOUS — an align request far outside the loaded map removes the map, and the tick after it
-/// raises a "not keeping up" ERROR for a vehicle that has not moved.
+/// An align request far outside the loaded map leaves that map alone.
 ///
-/// The service calls `update_map` directly, so the request position drives a differential query:
-/// the loaded cell's anchor is outside a circle centred 283 m away and comes back in
-/// `ids_to_remove`; the update succeeds, the map is empty, the align fails on it, and the request
-/// position is recorded as the last load. On the next tick the EKF position is 283 m from that --
-/// the ERROR, `need_rebuild`, and a rebuild that puts the cell back. Two effects of one failed
-/// request: the map is gone until re-activation plus a tick (production calls the service while
-/// deactivated, and the timer waits for activation), and monitoring sees a false alarm. The
-/// natural fix -- load into a scratch NDT and swap only on success -- changes both, so they are
-/// pinned as they are.
-TEST(NdtScanMatcherCharacteristics, FarAlignRequestRemovesTheLoadedCellUntilTheTimerReloadsIt)
+/// This case used to be SUSPICIOUS, and documented the opposite: the request position drove a
+/// differential query, the loaded cell came back in `ids_to_remove`, and the node was left with an
+/// empty map until the timer reloaded it. The fix its note named -- load into a scratch NDT and
+/// adopt it only on success -- is what the module does now, so the failed load costs nothing but
+/// the attempt.
+///
+/// What survives is the false alarm. A loader that answers with nothing still counts as "no map
+/// here" and records the request position, so the next tick measures 283 m from a vehicle that has
+/// not moved and reports that dynamic map loading is not keeping up.
+TEST(NdtScanMatcherCharacteristics, FarAlignRequestLeavesTheLoadedMapIntact)
 {
   // Arrange
   auto harness = make_ready_harness(fast_align_overrides());
@@ -1986,13 +1991,22 @@ TEST(NdtScanMatcherCharacteristics, FarAlignRequestRemovesTheLoadedCellUntilTheT
 
   const auto diag = harness->wait_for_diag_since_mark(ndt_align_status);
   ASSERT_TRUE(diag.has_value());
-  EXPECT_EQ(diag->value("is_need_rebuild"), "False");
-  EXPECT_EQ(diag->value("maps_to_remove_size"), "1");
-  EXPECT_EQ(diag->value("is_updated_map"), "True");
-  EXPECT_EQ(diag->value("maps_size_after"), "0");
-  EXPECT_EQ(diag->value("is_set_map_points"), "False");
-  EXPECT_EQ(diag->level(), level_warn) << "message was: " << diag->message();
+  // Out of range of the loaded map, so a rebuild; the loader has nothing there, so it fails.
+  EXPECT_EQ(diag->value("is_need_rebuild"), "True");
+  EXPECT_EQ(diag->value("is_updated_map"), "False");
+  EXPECT_EQ(diag->level(), level_error) << "message was: " << diag->message();
+  // The loader had nothing at the request position, so the rebuild had nothing to adopt ...
+  EXPECT_EQ(diag->value("maps_to_add_size"), "0");
+  EXPECT_EQ(diag->value("maps_to_remove_size"), "0");
+  // ... and the map the node already had is still installed, where this read "False" before.
+  //
+  // Measured, this no longer guards the fix: adopting the rebuilt NDT before the load succeeds
+  // keeps the case green, because the module hands nothing back on a failure and so cannot touch
+  // the installed map either way. What it wrecks is the module's own cached map, one load later.
+  // `MapUpdateModuleTest.AFailedRebuildKeepsTheMapAlreadyLoaded` is what fails there.
+  EXPECT_EQ(diag->value("is_set_map_points"), "True");
 
+  // The next tick measures from the request position, not from where the vehicle is.
   const auto reload = harness->wait_for_diag(
     map_update_status,
     [](const NdtHarness::Record & record) {
@@ -2004,16 +2018,22 @@ TEST(NdtScanMatcherCharacteristics, FarAlignRequestRemovesTheLoadedCellUntilTheT
   EXPECT_EQ(reload->value("maps_size_after"), "1");
 }
 
-/// Without a map loader the timer reports one failed attempt and does not spin retrying.
+/// Without a map loader the timer keeps trying, once per tick.
 ///
-/// `update_ndt` gives the service a second to appear, then reports `is_succeed_call_pcd_loader:
-/// False` with a WARN and returns; the rebuild that called it turns that into the ERROR, records
-/// the position, and -- as after any failed load -- does not try again until the vehicle moves
-/// `update_distance`. The timer callback blocks for that second on each attempt. The message no
-/// longer says which failure fired: `autowarefoundation/autoware_core#1322` collapsed the "service
-/// never appeared" and `!rclcpp::ok()` WARNs into one, so the text now carries no more than
-/// `is_succeed_call_pcd_loader: False` already does. It is still asserted, to pin the collapse.
-TEST(NdtScanMatcherCharacteristics, WithoutAMapLoaderTheTimerWarnsOnceAndDoesNotLoad)
+/// Being unable to reach the loader is not the same as being told there is no map here, and only
+/// the latter records a position. So nothing is recorded, `needs_update` still reads "nothing
+/// loaded yet", and the next tick asks again. That is what lets a stationary vehicle recover once
+/// the loader appears: recording the failed position instead would leave a vehicle that never
+/// moves -- the normal state while waiting for initialization -- never told to try again.
+///
+/// The price is one attempt per tick while the loader is missing, each blocking the timer for the
+/// second `wait_for_service` spends looking for it.
+///
+/// The message no longer says which failure fired: autowarefoundation/autoware_core#1322 collapsed
+/// the "service never appeared" and `!rclcpp::ok()` WARNs into one, so the text now carries no more
+/// than `is_succeed_call_pcd_loader: False` already does. It is still asserted, to pin the
+/// collapse.
+TEST(NdtScanMatcherCharacteristics, WithoutAMapLoaderTheTimerKeepsRetrying)
 {
   // Arrange
   auto harness =
@@ -2037,15 +2057,24 @@ TEST(NdtScanMatcherCharacteristics, WithoutAMapLoaderTheTimerWarnsOnceAndDoesNot
   EXPECT_EQ(attempt->level(), level_error) << "message was: " << attempt->message();
   EXPECT_TRUE(contains(attempt->message(), "pcd_loader service is not working"))
     << "message was: " << attempt->message();
-  const auto idle_tick = harness->wait_for_diag(
-    map_update_status,
-    [](const NdtHarness::Record & record) {
-      return record.value_as_double("distance_last_update_position_to_current_position") == 0.0;
+  // Nothing was recorded, so no tick can measure a distance from it ...
+  EXPECT_FALSE(attempt->has_key("distance_last_update_position_to_current_position"))
+    << "keys: " << ::testing::PrintToString(attempt->keys_in_order());
+
+  // ... and the vehicle has not moved, yet another attempt follows anyway.
+  std::size_t attempts = 0;
+  ASSERT_TRUE(harness->wait_until(
+    [&] {
+      attempts = 0;
+      for (const auto & record : harness->diag().records(map_update_status)) {
+        if (record.has_key("is_need_rebuild")) {
+          ++attempts;
+        }
+      }
+      return attempts >= 2;
     },
-    5s);
-  ASSERT_TRUE(idle_tick.has_value());
-  EXPECT_FALSE(idle_tick->has_key("is_need_rebuild"))
-    << "keys: " << ::testing::PrintToString(idle_tick->keys_in_order());
+    10s))
+    << "only " << attempts << " attempt(s); the timer stopped retrying";
 }
 
 // ---------------------------------------------------------------------------------------------

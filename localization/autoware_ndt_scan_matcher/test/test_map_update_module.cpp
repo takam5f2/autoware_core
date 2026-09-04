@@ -19,7 +19,6 @@
 #include <autoware_map_msgs/msg/point_cloud_map_cell_with_id.hpp>
 #include <autoware_map_msgs/srv/get_differential_point_cloud_map.hpp>
 #include <geometry_msgs/msg/point.hpp>
-#include <geometry_msgs/msg/point_stamped.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <gtest/gtest.h>
@@ -28,17 +27,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
-// These tests exercise the map-update logic that the refactoring extracted out of the ROS node.
-// The ROS-dependent pcd load is injected as a plain std::function (PcdLoaderFunction), so the
-// whole flow runs in-process with a fake loader and no ROS service / executor.
+// The map-update logic driven directly: the pcd load is injected as a plain std::function, so the
+// whole flow runs in-process with a fake loader and no ROS service or executor.
 
 namespace autoware::ndt_scan_matcher
 {
 namespace
 {
 using GetDifferentialPointCloudMap = autoware_map_msgs::srv::GetDifferentialPointCloudMap;
+
+// The stamp the fake loader puts on its responses, which is what a merged debug map carries.
+constexpr int32_t response_stamp_sec = 42;
 
 geometry_msgs::msg::Point make_point(const double x, const double y)
 {
@@ -49,18 +51,23 @@ geometry_msgs::msg::Point make_point(const double x, const double y)
   return point;
 }
 
+GetDifferentialPointCloudMap::Response::SharedPtr make_response_with_one_cell()
+{
+  auto response = std::make_shared<GetDifferentialPointCloudMap::Response>();
+  autoware_map_msgs::msg::PointCloudMapCellWithID cell;
+  cell.cell_id = "0";
+  pcl::toROSMsg(make_sample_half_cubic_pcd(), cell.pointcloud);
+  response->new_pointcloud_with_ids.push_back(cell);
+  response->header.frame_id = "map";
+  response->header.stamp.sec = response_stamp_sec;
+  return response;
+}
+
 // A fake loader that always returns a single map cell built from the sample cubic pcd.
 MapUpdateModule::PcdLoaderFunction make_loader_returning_cell()
 {
-  return [](const GetDifferentialPointCloudMap::Request::SharedPtr & /*request*/)
-           -> GetDifferentialPointCloudMap::Response::SharedPtr {
-    auto response = std::make_shared<GetDifferentialPointCloudMap::Response>();
-    autoware_map_msgs::msg::PointCloudMapCellWithID cell;
-    cell.cell_id = "0";
-    pcl::toROSMsg(make_sample_half_cubic_pcd(), cell.pointcloud);
-    response->new_pointcloud_with_ids.push_back(cell);
-    response->header.frame_id = "map";
-    return response;
+  return [](const GetDifferentialPointCloudMap::Request::SharedPtr & /*request*/) {
+    return make_response_with_one_cell();
   };
 }
 
@@ -82,6 +89,7 @@ MapUpdateModule::PcdLoaderFunction make_loader_returning_cells(const std::size_t
       response->new_pointcloud_with_ids.push_back(cell);
     }
     response->header.frame_id = "map";
+    response->header.stamp.sec = response_stamp_sec;
     return response;
   };
 }
@@ -92,6 +100,29 @@ MapUpdateModule::PcdLoaderFunction make_failing_loader()
   return [](const GetDifferentialPointCloudMap::Request::SharedPtr & /*request*/)
            -> GetDifferentialPointCloudMap::Response::SharedPtr { return nullptr; };
 }
+
+// A fake loader that works until `working` is cleared, and fails afterwards.
+MapUpdateModule::PcdLoaderFunction make_switchable_loader(const std::shared_ptr<bool> & working)
+{
+  return [working](const GetDifferentialPointCloudMap::Request::SharedPtr & /*request*/)
+           -> GetDifferentialPointCloudMap::Response::SharedPtr {
+    if (!*working) {
+      return nullptr;
+    }
+    return make_response_with_one_cell();
+  };
+}
+
+std::optional<int64_t> int_value(const DiagnosticsReport & report, const std::string & key)
+{
+  for (const auto & key_value : report.key_values) {
+    if (key_value.key == key) {
+      return std::get<int64_t>(key_value.value);
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 class MapUpdateModuleTest : public ::testing::Test
@@ -99,14 +130,12 @@ class MapUpdateModuleTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    pclomp::NdtParams ndt_params{};
-    ndt_params.trans_epsilon = 0.01;
-    ndt_params.step_size = 0.1;
-    ndt_params.resolution = 2.0F;
-    ndt_params.max_iterations = 30;
-    ndt_params.num_threads = 1;
-    ndt_params.regularization_scale_factor = 0.0F;
-    ndt_ptr_.with([&](auto & ndt) { ndt->setParams(ndt_params); });
+    ndt_params_.trans_epsilon = 0.01;
+    ndt_params_.step_size = 0.1;
+    ndt_params_.resolution = 2.0F;
+    ndt_params_.max_iterations = 30;
+    ndt_params_.num_threads = 1;
+    ndt_params_.regularization_scale_factor = 0.0F;
 
     param_.update_distance = 5.0;
     param_.map_radius = 30.0;
@@ -114,103 +143,124 @@ protected:
     param_.publish_loaded_map = false;
   }
 
-  // Accessors for the private entry points. This fixture is a friend of MapUpdateModule, so these
-  // members may reach its private methods; the TEST_F bodies call them through the fixture.
-  static MapUpdateModule::UpdateResult update_map(
-    MapUpdateModule & module, const geometry_msgs::msg::Point & position)
-  {
-    return module.update_map(position);
-  }
-  static MapUpdateModule::UpdateResult callback_timer(
-    MapUpdateModule & module, const geometry_msgs::msg::Point & position)
-  {
-    return module.callback_timer(position);
-  }
-  static bool ndt_has_target(Guarded<MapUpdateModule::NdtPtrType> & ndt_ptr)
-  {
-    return ndt_ptr.with([](const auto & ndt) { return ndt->hasTarget(); });
-  }
-
-  Guarded<MapUpdateModule::NdtPtrType> ndt_ptr_{std::make_shared<MapUpdateModule::NdtType>()};
+  pclomp::NdtParams ndt_params_{};
   MapUpdateModule::Params param_{};
 };
 
-// The first update has no previous position, so it rebuilds the NDT from scratch and loads a map.
-TEST_F(MapUpdateModuleTest, FirstUpdateRebuildsAndLoadsMap)  // NOLINT
+// The first update has no previous position, so it loads from scratch and hands back an NDT that
+// holds the map. Nothing the caller owns is touched: the map arrives as a return value.
+TEST_F(MapUpdateModuleTest, FirstUpdateLoadsAMapAndHandsItBack)  // NOLINT
 {
-  MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
+  MapUpdateModule module(param_, ndt_params_, make_loader_returning_cell());
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update(make_point(0.0, 0.0));
 
-  EXPECT_TRUE(result.map_updated);
-  EXPECT_TRUE(ndt_has_target(ndt_ptr_));
+  ASSERT_NE(result.ndt, nullptr);
+  EXPECT_TRUE(result.ndt->hasTarget());
 }
 
 // out_of_map_range is true before any update, false at the last update position, and true again
 // once the query moves beyond (map_radius - lidar_radius) from it.
 TEST_F(MapUpdateModuleTest, OutOfMapRangeTracksLastUpdate)  // NOLINT
 {
-  MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
+  MapUpdateModule module(param_, ndt_params_, make_loader_returning_cell());
 
   EXPECT_TRUE(module.out_of_map_range(make_point(0.0, 0.0)));  // nothing loaded yet
 
-  ASSERT_TRUE(update_map(module, make_point(0.0, 0.0)).map_updated);
+  ASSERT_NE(module.update(make_point(0.0, 0.0)).ndt, nullptr);
 
   EXPECT_FALSE(module.out_of_map_range(make_point(0.0, 0.0)));   // at the last update position
   EXPECT_TRUE(module.out_of_map_range(make_point(100.0, 0.0)));  // 100 + 5 > 30
 }
 
-// callback_timer skips the update when the vehicle has not moved farther than update_distance.
-TEST_F(MapUpdateModuleTest, CallbackTimerSkipsWhenNotMovedFarEnough)  // NOLINT
+// needs_update answers the periodic caller's question: it is true before anything is loaded, and
+// then only once the vehicle has travelled update_distance.
+TEST_F(MapUpdateModuleTest, NeedsUpdateWaitsForTheVehicleToMove)  // NOLINT
 {
-  MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
-  ASSERT_TRUE(update_map(module, make_point(0.0, 0.0)).map_updated);
+  MapUpdateModule module(param_, ndt_params_, make_loader_returning_cell());
 
-  // Moved 1 m < update_distance (5 m) -> no update.
-  const auto result = callback_timer(module, make_point(1.0, 0.0));
-  EXPECT_FALSE(result.map_updated);
+  EXPECT_TRUE(module.needs_update(make_point(0.0, 0.0)));  // nothing loaded yet
+
+  ASSERT_NE(module.update(make_point(0.0, 0.0)).ndt, nullptr);
+
+  EXPECT_FALSE(module.needs_update(make_point(1.0, 0.0)));  // 1 m < update_distance (5 m)
+  EXPECT_TRUE(module.needs_update(make_point(6.0, 0.0)));   // 6 m > 5 m
 }
 
-// A failing loader yields no update and an ERROR diagnostic mentioning the loader failure.
-TEST_F(MapUpdateModuleTest, LoaderFailureReportsError)  // NOLINT
+// A failing loader yields no map and an ERROR diagnostic mentioning the loader failure.
+TEST_F(MapUpdateModuleTest, LoaderFailureReportsErrorAndHandsBackNothing)  // NOLINT
 {
-  MapUpdateModule module(ndt_ptr_, param_, make_failing_loader());
+  MapUpdateModule module(param_, ndt_params_, make_failing_loader());
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update(make_point(0.0, 0.0));
 
-  EXPECT_FALSE(result.map_updated);
+  EXPECT_EQ(result.ndt, nullptr);
   EXPECT_EQ(result.diagnostics.level, DiagnosticLevel::ERROR);
   EXPECT_NE(
     result.diagnostics.message.find("pcd_loader service is not working."), std::string::npos);
 }
 
+// A rebuild that fails leaves the map already loaded intact.
+//
+// The module loads into a fresh NDT and adopts it only once the load has succeeded, so a transient
+// loader failure cannot leave it with nothing. `maps_size_before` on the next successful load is
+// the witness: it counts the cells the cached map still holds, and would read zero had the failed
+// rebuild cleared it.
+//
+// The other half is that the failure leaves last_update_position_ alone. Without that, the query
+// below would be measured from (100, 0) and would itself be treated as out of range.
+TEST_F(MapUpdateModuleTest, AFailedRebuildKeepsTheMapAlreadyLoaded)  // NOLINT
+{
+  auto working = std::make_shared<bool>(true);
+  MapUpdateModule module(param_, ndt_params_, make_switchable_loader(working));
+
+  ASSERT_NE(module.update(make_point(0.0, 0.0)).ndt, nullptr);
+
+  // Far enough out of range to force a rebuild rather than a differential load, and the loader is
+  // now unreachable.
+  *working = false;
+  ASSERT_TRUE(module.out_of_map_range(make_point(100.0, 0.0)));
+  const auto failed = module.update(make_point(100.0, 0.0));
+  EXPECT_EQ(failed.ndt, nullptr);
+  EXPECT_EQ(failed.diagnostics.level, DiagnosticLevel::ERROR);
+
+  // The failure did not move the reference position, so this is still inside the loaded map.
+  EXPECT_FALSE(module.out_of_map_range(make_point(0.0, 0.0)));
+
+  *working = true;
+  const auto recovered = module.update(make_point(0.0, 0.0));
+  EXPECT_EQ(int_value(recovered.diagnostics, "maps_size_before"), 1)
+    << "the failed rebuild discarded the cached map";
+}
+
 // With publish_loaded_map enabled, a successful update returns the merged debug cloud in the "map"
-// frame, stamped with the query position's timestamp (the stamp is set inside the module).
+// frame, stamped from the loader's response rather than from any clock this module does not have.
 TEST_F(MapUpdateModuleTest, PublishesStampedLoadedMapWhenEnabled)  // NOLINT
 {
   param_.publish_loaded_map = true;
-  MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
+  MapUpdateModule module(param_, ndt_params_, make_loader_returning_cell());
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update(make_point(0.0, 0.0));
 
-  ASSERT_TRUE(result.map_updated);
+  ASSERT_NE(result.ndt, nullptr);
   ASSERT_TRUE(result.loaded_pcd_map.has_value());
   EXPECT_EQ(result.loaded_pcd_map->header.frame_id, "map");
+  EXPECT_EQ(result.loaded_pcd_map->header.stamp.sec, response_stamp_sec);
   EXPECT_GT(
     static_cast<std::size_t>(result.loaded_pcd_map->width) * result.loaded_pcd_map->height, 0U);
+  EXPECT_EQ(int_value(result.diagnostics, "loaded_pcd_map_skipped_cells"), 0);
 }
 
-// The debug cloud is the concatenation of every loaded cell: its point count and its buffer size
-// are the totals over the cells. Pins the in-place merge in merge_loaded_pcd_map().
+// Every loaded cell ends up in the one merged debug cloud, and none is skipped.
 TEST_F(MapUpdateModuleTest, MergesAllLoadedCellsIntoOneCloud)  // NOLINT
 {
   constexpr std::size_t num_cells = 3;
   param_.publish_loaded_map = true;
-  MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cells(num_cells));
+  MapUpdateModule module(param_, ndt_params_, make_loader_returning_cells(num_cells));
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update(make_point(0.0, 0.0));
 
-  ASSERT_TRUE(result.map_updated);
+  ASSERT_NE(result.ndt, nullptr);
   ASSERT_TRUE(result.loaded_pcd_map.has_value());
 
   // The per-cell totals to compare against: every cell holds one sample cubic pcd.
@@ -222,6 +272,7 @@ TEST_F(MapUpdateModuleTest, MergesAllLoadedCellsIntoOneCloud)  // NOLINT
     static_cast<std::size_t>(result.loaded_pcd_map->width),
     num_cells * static_cast<std::size_t>(one_cell.width) * one_cell.height);
   EXPECT_EQ(result.loaded_pcd_map->data.size(), num_cells * one_cell.data.size());
+  EXPECT_EQ(int_value(result.diagnostics, "loaded_pcd_map_skipped_cells"), 0);
   EXPECT_EQ(result.diagnostics.level, DiagnosticLevel::OK);
 }
 
@@ -229,11 +280,11 @@ TEST_F(MapUpdateModuleTest, MergesAllLoadedCellsIntoOneCloud)  // NOLINT
 TEST_F(MapUpdateModuleTest, DoesNotProduceLoadedMapWhenDisabled)  // NOLINT
 {
   param_.publish_loaded_map = false;
-  MapUpdateModule module(ndt_ptr_, param_, make_loader_returning_cell());
+  MapUpdateModule module(param_, ndt_params_, make_loader_returning_cell());
 
-  const auto result = update_map(module, make_point(0.0, 0.0));
+  const auto result = module.update(make_point(0.0, 0.0));
 
-  ASSERT_TRUE(result.map_updated);
+  ASSERT_NE(result.ndt, nullptr);
   EXPECT_FALSE(result.loaded_pcd_map.has_value());
 }
 
