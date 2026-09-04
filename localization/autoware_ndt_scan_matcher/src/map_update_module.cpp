@@ -27,8 +27,7 @@ namespace autoware::ndt_scan_matcher
 {
 
 MapUpdateModule::MapUpdateModule(
-  Guarded<NdtPtrType> & ndt_ptr, HyperParameters::DynamicMapLoading param,
-  PcdLoaderFunction pcd_loader)
+  Guarded<NdtPtrType> & ndt_ptr, Params param, PcdLoaderFunction pcd_loader)
 : pcd_loader_(std::move(pcd_loader)), ndt_ptr_(ndt_ptr), param_(param)
 {
   auto copied = builder_state_.with([&](auto & builder_state) {
@@ -188,7 +187,7 @@ bool MapUpdateModule::update_map_internal(
     // 2. Swap the pointers inside the ndt_ptr_'s lock.
     // - During the swap, the reference count does not decrease to zero,
     //   so the heavy destructor is not called here.
-    // - This prevents the align process of NDTScanMatcher from being
+    // - This prevents the align process of NdtScanMatcherNode from being
     //   blocked for a long time.
     ndt_ptr_.with([&](auto & ndt_ptr) { std::swap(ndt_ptr, new_ndt_ptr); });
 

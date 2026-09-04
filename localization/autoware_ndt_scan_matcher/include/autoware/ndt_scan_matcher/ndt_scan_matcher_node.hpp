@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef AUTOWARE__NDT_SCAN_MATCHER__NDT_SCAN_MATCHER_CORE_HPP_
-#define AUTOWARE__NDT_SCAN_MATCHER__NDT_SCAN_MATCHER_CORE_HPP_
+#ifndef AUTOWARE__NDT_SCAN_MATCHER__NDT_SCAN_MATCHER_NODE_HPP_
+#define AUTOWARE__NDT_SCAN_MATCHER__NDT_SCAN_MATCHER_NODE_HPP_
 
 #define FMT_HEADER_ONLY
 
+#include "diagnostics_report.hpp"
 #include "guarded.hpp"
 #include "hyper_parameters.hpp"
 #include "map_update_module.hpp"
@@ -68,7 +69,7 @@ namespace autoware::ndt_scan_matcher
 {
 using DiagnosticsInterface = autoware_utils_diagnostics::DiagnosticsInterface;
 
-class NDTScanMatcher : public rclcpp::Node
+class NdtScanMatcherNode : public rclcpp::Node
 {
   using PointSource = pcl::PointXYZ;
   using PointTarget = pcl::PointXYZ;
@@ -76,7 +77,7 @@ class NDTScanMatcher : public rclcpp::Node
     pclomp::MultiGridNormalDistributionsTransform<PointSource, PointTarget>;
 
 public:
-  explicit NDTScanMatcher(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  explicit NdtScanMatcherNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
   // This function is only used in static tools to know when timer callbacks are triggered.
   std::chrono::nanoseconds time_until_trigger() const
@@ -161,7 +162,7 @@ private:
 
   // Forwards a diagnostics update produced by MapUpdateModule to the given DiagnosticsInterface.
   static void apply_diagnostics_update(
-    DiagnosticsInterface & diagnostics, const MapUpdateModule::DiagnosticsReport & report);
+    DiagnosticsInterface & diagnostics, const DiagnosticsReport & report);
 
   rclcpp::TimerBase::SharedPtr map_update_timer_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
@@ -245,4 +246,4 @@ private:
 
 }  // namespace autoware::ndt_scan_matcher
 
-#endif  // AUTOWARE__NDT_SCAN_MATCHER__NDT_SCAN_MATCHER_CORE_HPP_
+#endif  // AUTOWARE__NDT_SCAN_MATCHER__NDT_SCAN_MATCHER_NODE_HPP_
