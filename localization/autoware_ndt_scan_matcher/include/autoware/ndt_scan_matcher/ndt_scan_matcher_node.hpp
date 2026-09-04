@@ -59,6 +59,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -139,8 +140,14 @@ private:
     const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_cov_msg,
     const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_old_msg,
     const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_new_msg);
+  // Loads the map around `position` and installs it, reporting into `diagnostics`. Returns the
+  // merged debug cloud when the module produced one, for the caller to stamp and publish.
+  [[nodiscard]] std::optional<sensor_msgs::msg::PointCloud2> install_map_update(
+    const geometry_msgs::msg::Point & position, DiagnosticsInterface & diagnostics);
+
   void publish_loaded_map_if_present(
-    MapUpdateModule::UpdateResult & result, const rclcpp::Time & stamp) const;
+    const std::optional<sensor_msgs::msg::PointCloud2> & loaded_pcd_map,
+    const std::optional<rclcpp::Time> & stamp = std::nullopt) const;
 
   static int count_oscillation(const std::vector<geometry_msgs::msg::Pose> & result_pose_msg_array);
 

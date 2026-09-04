@@ -202,7 +202,7 @@ NdtScanMatcherNode::NdtScanMatcherNode(const rclcpp::NodeOptions & options)
     this->create_client<MapUpdateModule::GetDifferentialPointCloudMap>("pcd_loader_service");
 
   map_update_module_ = std::make_unique<MapUpdateModule>(
-    ndt_ptr_, param_.dynamic_map_loading,
+    param_.dynamic_map_loading, param_.ndt,
     [this](const MapUpdateModule::GetDifferentialPointCloudMap::Request::SharedPtr & request) {
       return this->get_differential_point_cloud_map(request);
     });
@@ -252,14 +252,46 @@ void NdtScanMatcherNode::apply_diagnostics_update(
   diagnostics.update_level_and_message(static_cast<int8_t>(report.level), report.message);
 }
 
-void NdtScanMatcherNode::publish_loaded_map_if_present(
-  MapUpdateModule::UpdateResult & result, const rclcpp::Time & stamp) const
+std::optional<sensor_msgs::msg::PointCloud2> NdtScanMatcherNode::install_map_update(
+  const geometry_msgs::msg::Point & position, DiagnosticsInterface & diagnostics)
 {
-  if (!result.loaded_pcd_map.has_value()) {
-    return;
+  // While the loaded map does not cover the current position, hold ndt_ptr_ for the whole update:
+  // align must not keep running against a map that cannot cover the sensor. Otherwise only the
+  // pointer swap is done under the lock, so that the load overlaps with align.
+  const bool block_align_until_loaded = map_update_module_->out_of_map_range(position);
+
+  MapUpdateModule::MapUpdate update;
+  if (block_align_until_loaded) {
+    ndt_ptr_.with([&](auto & ndt_ptr) {
+      update = map_update_module_->update(position);
+      if (update.ndt) {
+        std::swap(ndt_ptr, update.ndt);
+      }
+    });
+  } else {
+    update = map_update_module_->update(position);
+    if (update.ndt) {
+      ndt_ptr_.with([&](auto & ndt_ptr) { std::swap(ndt_ptr, update.ndt); });
+    }
   }
-  result.loaded_pcd_map->header.stamp = stamp;
-  loaded_pcd_pub_->publish(*result.loaded_pcd_map);
+
+  // update.ndt now holds the map we just replaced, if any. Releasing it here runs its heavy
+  // destructor outside ndt_ptr_'s lock.
+  update.ndt.reset();
+
+  apply_diagnostics_update(diagnostics, update.diagnostics);
+  return std::move(update.loaded_pcd_map);
+}
+
+void NdtScanMatcherNode::publish_loaded_map_if_present(
+  const std::optional<sensor_msgs::msg::PointCloud2> & loaded_pcd_map,
+  const std::optional<rclcpp::Time> & stamp) const
+{
+  if (loaded_pcd_map.has_value()) {
+    auto msg = *loaded_pcd_map;
+    msg.header.stamp = stamp ? *stamp : this->now();
+    loaded_pcd_pub_->publish(msg);
+  }
 }
 
 void NdtScanMatcherNode::callback_timer()
@@ -293,10 +325,23 @@ void NdtScanMatcherNode::callback_timer()
     return;
   }
 
-  auto result = map_update_module_->callback_timer(latest_ekf_position.value());
-  apply_diagnostics_update(*diagnostics_map_update_, result.diagnostics);
+  // check distance_last_update_position_to_current_position
+  const auto moved_distance = map_update_module_->distance_from_last_update(*latest_ekf_position);
+  if (moved_distance) {
+    diagnostics_map_update_->add_key_value(
+      "distance_last_update_position_to_current_position", *moved_distance);
 
-  publish_loaded_map_if_present(result, ros_time_now);
+    // A map has been loaded before, but the vehicle has already outrun it.
+    if (map_update_module_->out_of_map_range(*latest_ekf_position)) {
+      diagnostics_map_update_->update_level_and_message(
+        diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Dynamic map loading is not keeping up.");
+    }
+  }
+
+  if (map_update_module_->needs_update(*latest_ekf_position)) {
+    publish_loaded_map_if_present(
+      install_map_update(*latest_ekf_position, *diagnostics_map_update_), ros_time_now);
+  }
   diagnostics_map_update_->publish(ros_time_now);
 }
 
@@ -1083,10 +1128,8 @@ void NdtScanMatcherNode::service_ndt_align_main(
   auto initial_pose_msg_in_map_frame =
     autoware::localization_util::transform(req->pose_with_covariance, transform_s2t);
   initial_pose_msg_in_map_frame.header.stamp = req->pose_with_covariance.header.stamp;
-  auto result = map_update_module_->update_map(initial_pose_msg_in_map_frame.pose.pose.position);
-  apply_diagnostics_update(*diagnostics_ndt_align_, result.diagnostics);
-
-  publish_loaded_map_if_present(result, this->now());
+  publish_loaded_map_if_present(
+    install_map_update(initial_pose_msg_in_map_frame.pose.pose.position, *diagnostics_ndt_align_));
 
   ndt_ptr_.with([&](auto & ndt_ptr) {
     // check is_set_map_points
