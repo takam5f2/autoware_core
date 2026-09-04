@@ -24,13 +24,11 @@
 
 namespace autoware::localization_util
 {
-// random number generator
-std::mt19937_64 TreeStructuredParzenEstimator::engine(0);
-
 TreeStructuredParzenEstimator::TreeStructuredParzenEstimator(
   const Direction direction, const int64_t n_startup_trials, std::vector<double> sample_mean,
-  std::vector<double> sample_stddev)
-: above_num_(0),
+  std::vector<double> sample_stddev, const std::uint64_t seed)
+: engine_(seed),
+  above_num_(0),
   direction_(direction),
   n_startup_trials_(n_startup_trials),
   input_dimension_(INDEX_NUM),
@@ -66,7 +64,7 @@ void TreeStructuredParzenEstimator::add_trial(const Trial & trial)
      static_cast<int64_t>(static_cast<double>(trials_.size()) * max_good_rate)});
 }
 
-TreeStructuredParzenEstimator::Input TreeStructuredParzenEstimator::get_next_input() const
+TreeStructuredParzenEstimator::Input TreeStructuredParzenEstimator::get_next_input()
 {
   std::normal_distribution<double> dist_normal_trans_x(
     sample_mean_[TRANS_X], sample_stddev_[TRANS_X]);
@@ -83,12 +81,12 @@ TreeStructuredParzenEstimator::Input TreeStructuredParzenEstimator::get_next_inp
   if (static_cast<int64_t>(trials_.size()) < n_startup_trials_ || above_num_ == 0) {
     // Random sampling based on prior until the number of trials reaches `n_startup_trials_`.
     Input input(input_dimension_);
-    input[TRANS_X] = dist_normal_trans_x(engine);
-    input[TRANS_Y] = dist_normal_trans_y(engine);
-    input[TRANS_Z] = dist_normal_trans_z(engine);
-    input[ANGLE_X] = dist_normal_angle_x(engine);
-    input[ANGLE_Y] = dist_normal_angle_y(engine);
-    input[ANGLE_Z] = dist_uniform_angle_z(engine);
+    input[TRANS_X] = dist_normal_trans_x(engine_);
+    input[TRANS_Y] = dist_normal_trans_y(engine_);
+    input[TRANS_Z] = dist_normal_trans_z(engine_);
+    input[ANGLE_X] = dist_normal_angle_x(engine_);
+    input[ANGLE_Y] = dist_normal_angle_y(engine_);
+    input[ANGLE_Z] = dist_uniform_angle_z(engine_);
     return input;
   }
 
@@ -96,12 +94,12 @@ TreeStructuredParzenEstimator::Input TreeStructuredParzenEstimator::get_next_inp
   double best_log_likelihood_ratio = std::numeric_limits<double>::lowest();
   for (int64_t i = 0; i < n_ei_candidates; i++) {
     Input input(input_dimension_);
-    input[TRANS_X] = dist_normal_trans_x(engine);
-    input[TRANS_Y] = dist_normal_trans_y(engine);
-    input[TRANS_Z] = dist_normal_trans_z(engine);
-    input[ANGLE_X] = dist_normal_angle_x(engine);
-    input[ANGLE_Y] = dist_normal_angle_y(engine);
-    input[ANGLE_Z] = dist_uniform_angle_z(engine);
+    input[TRANS_X] = dist_normal_trans_x(engine_);
+    input[TRANS_Y] = dist_normal_trans_y(engine_);
+    input[TRANS_Z] = dist_normal_trans_z(engine_);
+    input[ANGLE_X] = dist_normal_angle_x(engine_);
+    input[ANGLE_Y] = dist_normal_angle_y(engine_);
+    input[ANGLE_Z] = dist_uniform_angle_z(engine_);
     const double log_likelihood_ratio = compute_log_likelihood_ratio(input);
     if (log_likelihood_ratio > best_log_likelihood_ratio) {
       best_log_likelihood_ratio = log_likelihood_ratio;
