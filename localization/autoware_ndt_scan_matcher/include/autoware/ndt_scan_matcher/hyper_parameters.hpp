@@ -94,6 +94,7 @@ struct HyperParameters
     ConvergedParamType converged_param_type{};
     double converged_param_transform_probability{};
     double converged_param_nearest_voxel_transformation_likelihood{};
+    bool publish_voxel_score_points{};
     struct NoGroundPoints
     {
       bool enable{};
@@ -172,6 +173,8 @@ public:
     score_estimation.converged_param_nearest_voxel_transformation_likelihood =
       node->declare_parameter<double>(
         "score_estimation.converged_param_nearest_voxel_transformation_likelihood");
+    score_estimation.publish_voxel_score_points =
+      node->declare_parameter<bool>("score_estimation.publish_voxel_score_points");
     score_estimation.no_ground_points.enable =
       node->declare_parameter<bool>("score_estimation.no_ground_points.enable");
     score_estimation.no_ground_points.z_margin_for_ground_removal = node->declare_parameter<double>(

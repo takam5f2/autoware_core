@@ -24,6 +24,11 @@
           "default": 2.3,
           "minimum": 0.0
         },
+        "publish_voxel_score_points": {
+          "type": "boolean",
+          "description": "A flag for publishing voxel_score_points, which colours every scan point by its nearest-voxel score. Computing it costs an extra pass over the scan, so it is off by default.",
+          "default": false
+        },
         "no_ground_points": {
           "$ref": "score_estimation_no_ground_points.json#/definitions/no_ground_points"
         }
@@ -31,6 +36,7 @@
       "required": [
         "converged_param_type",
         "converged_param_transform_probability",
+        "publish_voxel_score_points",
         "no_ground_points"
       ],
       "additionalProperties": false
