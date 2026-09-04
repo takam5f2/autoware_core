@@ -135,6 +135,12 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_map_update_module ${PROJECT_NAME}_core multigrid_ndt_omp ${PCL_LIBRARIES})
 
+  # Unit tests for the core matcher itself: no node, no executor, an injected fake pcd loader.
+  ament_auto_add_gtest(test_ndt_scan_matcher_core
+    test/test_ndt_scan_matcher_core.cpp
+  )
+  target_link_libraries(test_ndt_scan_matcher_core ${PROJECT_NAME}_core multigrid_ndt_omp ${PCL_LIBRARIES})
+
   # Compiling this is the test: the core's public headers, with rclcpp off the include path. See
   # the file for what it covers.
   add_library(test_core_is_ros_free OBJECT test/test_core_is_ros_free.cpp)
