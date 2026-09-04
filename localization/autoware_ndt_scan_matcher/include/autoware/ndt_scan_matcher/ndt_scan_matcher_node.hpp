@@ -22,6 +22,7 @@
 #include "hyper_parameters.hpp"
 #include "map_update_module.hpp"
 #include "ndt_omp/multigrid_ndt_omp.h"
+#include "pose_initialization_search.hpp"
 #include "pose_interpolation_buffer.hpp"
 
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
@@ -114,10 +115,6 @@ private:
     const autoware_internal_localization_msgs::srv::PoseWithCovarianceStamped::Request::SharedPtr
       req,
     autoware_internal_localization_msgs::srv::PoseWithCovarianceStamped::Response::SharedPtr res);
-
-  std::tuple<geometry_msgs::msg::PoseWithCovarianceStamped, double> align_pose(
-    const geometry_msgs::msg::PoseWithCovarianceStamped & initial_pose_with_cov,
-    NormalDistributionsTransform & ndt_ref);
 
   void transform_sensor_measurement(
     const std::string & source_frame, const std::string & target_frame,
@@ -249,6 +246,7 @@ private:
   std::unique_ptr<DiagnosticsInterface> diagnostics_ndt_align_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_trigger_node_;
   std::unique_ptr<MapUpdateModule> map_update_module_;
+  PoseInitializationParams pose_initialization_params_;
   std::unique_ptr<autoware_utils_logging::LoggerLevelConfigure> logger_configure_;
 
   HyperParameters param_;

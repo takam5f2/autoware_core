@@ -55,6 +55,19 @@ enum class LogSite : uint8_t {
   PoseBufferStampMismatch,      // INFO
   PoseBufferTimeoutViolation,   // WARN
   PoseBufferDistanceViolation,  // WARN
+
+  // ScanMatchingModule's hot path. All three were throttled at 1000 ms.
+  ScanTransformFailed,      // ERROR
+  ScanOutOfMapRange,        // WARN
+  ScanScoreBelowThreshold,  // WARN
+
+  // PoseInitializationSearch. The two Align* warnings were throttled at 1000 ms; the other three
+  // were not.
+  AlignNoInputTarget,  // WARN, throttled
+  AlignNoInputSource,  // WARN, throttled
+  AlignUnstableScore,  // WARN
+  AlignPoseInput,      // DEBUG
+  AlignPoseOutput,     // DEBUG
 };
 
 // One log line a core module would have emitted. Modules record; the node logs.
@@ -80,10 +93,44 @@ struct DiagnosticsReport
 
   void add_key_value(DiagnosticKeyValue key_value) { key_values.push_back(std::move(key_value)); }
 
-  // Accumulates like DiagnosticsInterface: raises the level and appends the message.
+  // A yes/no precondition, which is the shape almost every check in this package has: record it
+  // as a key either way, and on failure raise the level and append the message. Returns `value`,
+  // so a call site reads as the condition it is:
+  //
+  //   if (!diagnostics.check("is_set_map_points", ndt.hasTarget(), WARN, "No InputTarget...")) {
+  //     return result;
+  //   }
+  bool check(
+    std::string key, const bool value, const DiagnosticLevel level_on_failure,
+    const std::string & message_on_failure)
+  {
+    add_key_value({std::move(key), value});
+    if (!value) {
+      update_level_and_message(level_on_failure, message_on_failure);
+    }
+    return value;
+  }
+
+  // As above, and the failure also goes to the log site it used to be logged from.
+  bool check(
+    std::string key, const bool value, const DiagnosticLevel level_on_failure,
+    const std::string & message_on_failure, const LogSite site)
+  {
+    if (!check(std::move(key), value, level_on_failure, message_on_failure)) {
+      logs.push_back({site, message_on_failure});
+      return false;
+    }
+    return true;
+  }
+
+  // Accumulates like DiagnosticsInterface: raises the level and appends the message. An empty
+  // message is skipped, as it is there -- without that, `append` below would join a separator
+  // onto nothing for a report that was raised without a message.
   void update_level_and_message(DiagnosticLevel new_level, const std::string & new_message)
   {
-    if (static_cast<int8_t>(new_level) > static_cast<int8_t>(DiagnosticLevel::OK)) {
+    if (
+      static_cast<int8_t>(new_level) > static_cast<int8_t>(DiagnosticLevel::OK) &&
+      !new_message.empty()) {
       if (!message.empty()) {
         message += "; ";
       }
@@ -92,6 +139,23 @@ struct DiagnosticsReport
     if (static_cast<int8_t>(new_level) > static_cast<int8_t>(level)) {
       level = new_level;
     }
+  }
+
+  // Merges a report produced later into this one: keys and logs in call order, level and message
+  // accumulated as above.
+  //
+  // This is what forwarding two reports to one DiagnosticsInterface in turn used to do, and it is
+  // what keeps `AligningOutsideMapRangeFailsWithThreeJoinedMessages` joined in the right order now
+  // that the map update and the pose search report into a single call's result.
+  void append(DiagnosticsReport other)
+  {
+    for (auto & key_value : other.key_values) {
+      key_values.push_back(std::move(key_value));
+    }
+    for (auto & log : other.logs) {
+      logs.push_back(std::move(log));
+    }
+    update_level_and_message(other.level, other.message);
   }
 };
 
