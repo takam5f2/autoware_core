@@ -1495,14 +1495,19 @@ TEST(NdtScanMatcherCharacteristics, AlignWithoutAStoredScanFailsAfterTheMapCheck
     << "the search ran without a scan. keys: " << ::testing::PrintToString(diag->keys_in_order());
 }
 
-/// What a successful align records about itself: twelve keys, and one `points_aligned` per
-/// particle.
+/// What a successful align records about itself: twelve keys, one aligned cloud, and one marker
+/// array holding every particle.
 ///
 /// The align-side twin of `ScanMatchingStatusEmitsExactlyTheseNineteenKeys`, compared the same way.
 /// Six of the keys are the map module's: every align calls `update_map` directly, so with the map
-/// already loaded it takes the incremental path, asks the loader, and is told nothing is new. The
-/// cloud count is `particles_num`, pinned by the case's own override.
-TEST(NdtScanMatcherCharacteristics, SuccessfulAlignEmitsTheseKeysAndOneCloudPerParticle)
+/// already loaded it takes the incremental path, asks the loader, and is told nothing is new.
+///
+/// The two publish counts are the whole of what the search shows the outside. Both used to follow
+/// `particles_num`: a cloud per particle and a marker array per twenty, emitted as the search ran.
+/// Both are now one, emitted once it has finished, which is what let the search stop handing its
+/// caller a particle at a time. The marker count below is the witness that no particle was lost in
+/// the change -- six namespaces each, all in the one array.
+TEST(NdtScanMatcherCharacteristics, SuccessfulAlignEmitsTheseKeysAndOneAlignedCloud)
 {
   // Arrange
   constexpr int particles_num = 10;
@@ -1512,7 +1517,9 @@ TEST(NdtScanMatcherCharacteristics, SuccessfulAlignEmitsTheseKeysAndOneCloudPerP
   // Created after the readying scan, so its cloud is not counted; matched before the align, so
   // none of the align's are missed.
   auto points_aligned = harness->capture<sensor_msgs::msg::PointCloud2>("/points_aligned");
-  ASSERT_TRUE(wait_for_capture_discovery(*harness, points_aligned));
+  auto markers =
+    harness->capture<visualization_msgs::msg::MarkerArray>("/monte_carlo_initial_pose_marker");
+  ASSERT_TRUE(wait_for_capture_discovery(*harness, points_aligned, markers));
 
   harness->diag().mark(ndt_align_status);
 
@@ -1547,9 +1554,15 @@ TEST(NdtScanMatcherCharacteristics, SuccessfulAlignEmitsTheseKeysAndOneCloudPerP
   EXPECT_EQ(sorted(diag->keys_in_order()), sorted(expected_keys));
   EXPECT_EQ(diag->level(), level_ok) << "message was: " << diag->message();
 
-  ASSERT_TRUE(harness->wait_until(
-    [&] { return points_aligned->count() >= static_cast<size_t>(particles_num); }, 5s));
-  EXPECT_EQ(points_aligned->count(), static_cast<size_t>(particles_num));
+  ASSERT_TRUE(
+    harness->wait_until([&] { return points_aligned->count() >= 1 && markers->count() >= 1; }, 5s));
+  EXPECT_EQ(points_aligned->count(), 1U);
+  ASSERT_EQ(markers->count(), 1U);
+  const auto marker_array = markers->first();
+  ASSERT_TRUE(marker_array.has_value());
+  constexpr size_t namespaces_per_particle = 6;
+  EXPECT_EQ(
+    marker_array->markers.size(), static_cast<size_t>(particles_num) * namespaces_per_particle);
 }
 
 /// Aligning outside the map range fails, and reports three messages joined into one.
