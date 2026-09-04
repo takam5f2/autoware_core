@@ -18,12 +18,9 @@
 #define FMT_HEADER_ONLY
 
 #include "diagnostics_report.hpp"
-#include "guarded.hpp"
 #include "hyper_parameters.hpp"
 #include "map_update_module.hpp"
-#include "ndt_omp/multigrid_ndt_omp.h"
-#include "pose_initialization_search.hpp"
-#include "scan_matching_module.hpp"
+#include "ndt_scan_matcher.hpp"
 
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
 #include <autoware_utils_logging/logger_level_configure.hpp>
@@ -57,7 +54,6 @@
 #endif
 
 #include <array>
-#include <atomic>
 #include <deque>
 #include <map>
 #include <memory>
@@ -94,7 +90,7 @@ private:
   void callback_sensor_points(
     sensor_msgs::msg::PointCloud2::ConstSharedPtr sensor_points_msg_in_sensor_frame);
   // The TF the scan match needs, looked up here because the module holds no TF buffer.
-  [[nodiscard]] ScanMatchingModule::TransformLookup lookup_base_from_sensor(
+  [[nodiscard]] NdtScanMatcher::TransformLookup lookup_base_from_sensor(
     const std::string & sensor_frame);
 
   void service_trigger_node(
@@ -110,7 +106,7 @@ private:
       req,
     autoware_internal_localization_msgs::srv::PoseWithCovarianceStamped::Response::SharedPtr res);
 
-  void publish_scan_matching_output(const ScanMatchingModule::ScanMatchingOutput & output);
+  void publish_scan_matching_output(const NdtScanMatcher::ScanMatchingOutput & output);
 
   MapUpdateModule::GetDifferentialPointCloudMap::Response::SharedPtr
   get_differential_point_cloud_map(
@@ -122,11 +118,6 @@ private:
   // Forwards a diagnostics update produced by a core module to the given DiagnosticsInterface.
   static void apply_diagnostics_update(
     DiagnosticsInterface & diagnostics, const DiagnosticsReport & report);
-
-  // Loads the map around `position` and installs it, reporting into `diagnostics`. Returns the
-  // merged debug cloud when the module produced one, for the caller to stamp and publish.
-  [[nodiscard]] std::optional<sensor_msgs::msg::PointCloud2> install_map_update(
-    const geometry_msgs::msg::Point & position, DiagnosticsInterface & diagnostics);
 
   void publish_loaded_map_if_present(
     const std::optional<sensor_msgs::msg::PointCloud2> & loaded_pcd_map,
@@ -191,22 +182,9 @@ private:
   std::unique_ptr<DiagnosticsInterface> diagnostics_ndt_align_;
   std::unique_ptr<DiagnosticsInterface> diagnostics_trigger_node_;
 
-  Guarded<std::shared_ptr<MapUpdateModule::NdtType>> ndt_ptr_{
-    std::make_shared<MapUpdateModule::NdtType>()};
-
-  // Written by callback_sensor_points, read by service_ndt_align. Both are registered in
-  // sensor_callback_group, which is MutuallyExclusive, so the executor -- not a mutex -- is what
-  // keeps these two from overlapping.
-  ScanMatchingModule::CloudPtr sensor_points_in_baselink_frame_;
-
-  std::atomic<bool> is_activated_;
-  // Consecutive scans that produced nothing to publish, reset by a success or by deactivation.
-  // A member rather than a function-local static: one counter per node, not one per process.
-  int64_t skipping_publish_num_{0};
-
-  std::unique_ptr<MapUpdateModule> map_update_module_;
-  std::unique_ptr<ScanMatchingModule> scan_matching_module_;
-  PoseInitializationParams pose_initialization_params_;
+  // Everything this node is a node for. It owns the NDT, its lock, and the modules; this class
+  // owns only the ROS side of each callback.
+  std::unique_ptr<NdtScanMatcher> matcher_;
   std::unique_ptr<autoware_utils_logging::LoggerLevelConfigure> logger_configure_;
 
   HyperParameters param_;
