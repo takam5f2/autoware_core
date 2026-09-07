@@ -12,7 +12,7 @@
 
 | ブランチ | 内容 | PR |
 |---|---|---|
-| `line/00-characterization-on-main` | 仕様化テスト 47 コミット + ローダ文言修正 + ケースの並び替え + 5 件目の修正（tip 6abe4dcb、2026-09-07） | なし |
+| `line/00-characterization-on-main` | 仕様化テスト 47 コミット + ローダ文言修正 + ケースの並び替え + 5 件目の修正（tip 7d19c674、2026-09-07） | なし |
 | `line/01`〜`line/05` | 振る舞い変更 5 段（skip counter ノード毎化、TPE の RNG、enum 検証、align 点群 1 件化、voxel_score_points パラメータ化） | #29〜#33 |
 | `line/06` | コア層の土台（移動のみ） | #34 |
 | `line/07` | MapUpdateModule が地図を所有（振る舞い変更） | #35 |
@@ -23,13 +23,13 @@
 
 ## 現在地（2026-09-07）
 
-- line/00 に「ケースの並びをノードの流れに揃える」コミットと 5 件目の修正（6abe4dcb）を足して push 済み。**`line/01`〜`12` はまだ旧 line/00（f68d86aa）の上にある。** 載せ直しは未実施。
+- line/00 に「ケースの並びをノードの流れに揃える」コミット、5 件目の修正（6abe4dcb）、13 件目の docstring 修正（7d19c674）を足して push 済み。**`line/01`〜`12` はまだ旧 line/00（f68d86aa）の上にある。** 載せ直しは未実施。
 - 並び替え後の章: A ゲート 7 / B 初期姿勢と活性化 6 / C 収束経路 12 / D `ndt_align_srv` 6 / E 出荷設定 2 / F 地図 5 / G 既定オフ 4。カウンタを進めたまま終わる 6 ケースに `ScopeExit` を足し、順序をプロセス共有の `static` カウンタから独立させた。宣言順と `--gtest_shuffle`（seed 7 / 12345）で 42/42。
 - ユーザーは設計説明資料（Confluence）を執筆中。仕様化テストの節は出発点 42 件の表を主にし、到達点 44 件との差分（改名 4、追加 2）を最後にまとめる方針。追加 2 件は元の振る舞いが観測不能で pin できなかった箇所: `UnknownCovarianceEstimationTypeIsRejectedAtConstruction`（line/03）、`VoxelScorePointsFollowItsParameter`（line/05）。
 
 ## 1 件ずつの確認 — 進捗（2026-09-07）
 
-読む場所は `line/00-characterization-on-main`（6abe4dcb）。docstring が指すシンボルは同じチェックアウトの `src/ndt_scan_matcher_core.cpp` にある。1 件ごとに「何を pin しているか / どう駆動しているか / 何を assert しているか / pin していないもの」の 4 点で短くまとめ、直すかどうかはユーザーが決める。
+読む場所は `line/00-characterization-on-main`（7d19c674）。docstring が指すシンボルは同じチェックアウトの `src/ndt_scan_matcher_core.cpp` にある。1 件ごとに「何を pin しているか / どう駆動しているか / 何を assert しているか / pin していないもの」の 4 点で短くまとめ、直すかどうかはユーザーが決める。
 
 済み（ファイル順）:
 
@@ -39,7 +39,17 @@
 4. `NearFieldScanIsRejectedBeforeActivationCheck` — 最遠点 < `required_distance`。順序の証人は `is_activated` 不在。読み方: 点群の資格審査 4 つ → 保存 → ノード側の準備確認、の 2 段構成。
 5. `SensorPointsAreStoredEvenWhileDeactivated` — SUSPICIOUS。align サービスは `is_activated_` を見ないので Act の `activate()` は不要。外して docstring（初期位置推定中は非活性）に揃えた。**対応済み（6abe4dcb）。**
 
-次: 6. `MissingInitialPoseAbortsBeforeMapCheck`。
+6.–7. ユーザーが別途確認済み。
+8. `InitialPoseIsRejectedBeforeTheFrameCheckWhenNotActivated` — 順序の証人は `is_expected_frame_id` 不在。副作用の不在は 10 が担当。
+9. `WrongFrameIdOnInitialPoseIsErrorNotWarn` — ERROR の線引き（自然に直らない不備）。「止まった」の証人は無く、10 が別観測点で担う。
+10. `RejectedInitialPoseUpdatesNeitherBufferNorMapAnchor` — 棄却姿勢はバッファにも `latest_ekf_position_` にも入らない。タイマー記録は活性化後のものを待つ。
+11. `ActivatingClearsTheInitialPoseBuffer` — 活性化のたびに `clear()`。対照腕と実験腕。`trigger_node_status` の 3 キーは誰も見ていない。
+12. `InitialPoseDistanceToleranceReachesTheInterpolationBuffer` — パラメータ配線のテスト。診断は失敗理由を区別しない。`initial_pose_timeout_sec` 側の配線は未 pin。
+13. `PublishedInitialPoseIsTheInterpolatedMidpoint` — スキャンが両姿勢のちょうど中央なので重みの逆転は検出できない。docstring の言い過ぎを削った（7d19c674）。共分散は補間されず旧姿勢のものが載る（未 pin）。
+
+次: 14. `ScanMatchingStatusEmitsExactlyTheseNineteenKeys`。
+
+`PoseInterpolationBuffer`（line/08 で vendoring）の単体テスト候補: 重み付け（非対称な時刻で）、共分散が旧姿勢のコピーであること、`initial_pose_timeout_sec` の配線、失敗理由の区別。
 
 修正候補（未実施）:
 
