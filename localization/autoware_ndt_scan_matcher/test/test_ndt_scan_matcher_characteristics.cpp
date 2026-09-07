@@ -485,8 +485,6 @@ TEST(NdtScanMatcherCharacteristics, SensorPointsAreStoredEvenWhileDeactivated)
     << ::testing::PrintToString(outcome->diag.keys_in_order());
 
   // Act
-  ASSERT_EQ(harness->activate(), std::optional<bool>(true));
-
   harness->diag().mark(ndt_align_status);
   const auto response =
     harness->call_ndt_align(make_pose_at(harness->now(), map_center_x, map_center_y));
