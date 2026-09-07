@@ -752,9 +752,9 @@ TEST(NdtScanMatcherCharacteristics, InitialPoseDistanceToleranceReachesTheInterp
 /// The pose `align` starts from is the interpolated midpoint, not either bracketing pose.
 ///
 /// `SmartPoseBuffer::interpolate` is what turns two EKF poses into the one initial guess, and
-/// `/initial_pose_with_covariance` publishes exactly the value that was handed to `align`. Getting
-/// the interpolation wrong -- taking an endpoint, weighting by the wrong side -- moves every
-/// scan-matching result, and no diagnostic would say so.
+/// `/initial_pose_with_covariance` publishes exactly the value that was handed to `align`. Taking
+/// an endpoint instead moves every scan-matching result, and no diagnostic would say so. Not
+/// caught here: swapped weights, because the scan sits exactly midway between the two poses.
 TEST(NdtScanMatcherCharacteristics, PublishedInitialPoseIsTheInterpolatedMidpoint)
 {
   // Arrange
