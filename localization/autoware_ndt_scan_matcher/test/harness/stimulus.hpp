@@ -35,6 +35,9 @@ namespace ndt_test
 inline constexpr const char * map_frame = "map";
 inline constexpr const char * base_link_frame = "base_link";
 inline constexpr const char * sensor_frame = "sensor_frame";
+/// The child frame the node broadcasts its result on. Matches `frame.ndt_base_frame`, which the
+/// converged cases pin explicitly.
+inline constexpr const char * ndt_base_link_frame = "ndt_base_link";
 
 /// @brief Diagnostic status names published by the node under test.
 inline constexpr const char * scan_matching_status = "ndt_scan_matcher: scan_matching_status";
@@ -164,7 +167,10 @@ inline sensor_msgs::msg::PointCloud2 make_near_field_scan(
   return cloud;
 }
 
-/// @brief An EKF-like pose, with the covariance `align_pose` samples its search from.
+/// @brief An EKF-like initial pose, with an isotropic xy variance.
+///
+/// `align_pose` takes the square roots of the covariance diagonal as the standard deviations of its
+/// initial-pose search, so this covariance is what decides how widely `ndt_align_srv` looks.
 inline geometry_msgs::msg::PoseWithCovarianceStamped make_pose_at(
   const builtin_interfaces::msg::Time & stamp, const double x, const double y,
   const std::string & frame_id = map_frame)
