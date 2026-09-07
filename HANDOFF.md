@@ -12,7 +12,7 @@
 
 | ブランチ | 内容 | PR |
 |---|---|---|
-| `line/00-characterization-on-main` | 仕様化テスト 47 コミット + ローダ文言修正 + ケースの並び替え（tip 9468dd3d、2026-09-04） | なし |
+| `line/00-characterization-on-main` | 仕様化テスト 47 コミット + ローダ文言修正 + ケースの並び替え（tip 9468dd3d、2026-09-07） | なし |
 | `line/01`〜`line/05` | 振る舞い変更 5 段（skip counter ノード毎化、TPE の RNG、enum 検証、align 点群 1 件化、voxel_score_points パラメータ化） | #29〜#33 |
 | `line/06` | コア層の土台（移動のみ） | #34 |
 | `line/07` | MapUpdateModule が地図を所有（振る舞い変更） | #35 |
@@ -21,13 +21,13 @@
 | `test/ndt-scan-matcher-characterization-*` | 旧ベース上の仕様化テスト | #1〜#5（open） |
 | `refactor/*`, `fix/*` の残り | 旧系列（#6〜#28、closed） | 履歴 |
 
-## 現在地（2026-09-04）
+## 現在地（2026-09-07）
 
 - line/00 に「ケースの並びをノードの流れに揃える」コミットを足して push 済み。**`line/01`〜`12` はまだ旧 line/00（f68d86aa）の上にある。** 載せ直しは未実施。
 - 並び替え後の章: A ゲート 7 / B 初期姿勢と活性化 6 / C 収束経路 12 / D `ndt_align_srv` 6 / E 出荷設定 2 / F 地図 5 / G 既定オフ 4。カウンタを進めたまま終わる 6 ケースに `ScopeExit` を足し、順序をプロセス共有の `static` カウンタから独立させた。宣言順と `--gtest_shuffle`（seed 7 / 12345）で 42/42。
 - ユーザーは設計説明資料（Confluence）を執筆中。仕様化テストの節は出発点 42 件の表を主にし、到達点 44 件との差分（改名 4、追加 2）を最後にまとめる方針。追加 2 件は元の振る舞いが観測不能で pin できなかった箇所: `UnknownCovarianceEstimationTypeIsRejectedAtConstruction`（line/03）、`VoxelScorePointsFollowItsParameter`（line/05）。
 
-## 1 件ずつの確認 — 進捗（2026-09-04）
+## 1 件ずつの確認 — 進捗（2026-09-07）
 
 読む場所は `line/00-characterization-on-main`（9468dd3d）。docstring が指すシンボルは同じチェックアウトの `src/ndt_scan_matcher_core.cpp` にある。1 件ごとに「何を pin しているか / どう駆動しているか / 何を assert しているか / pin していないもの」の 4 点で短くまとめ、直すかどうかはユーザーが決める。
 
